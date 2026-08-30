@@ -37,6 +37,18 @@ class SessionUnavailable(LinkedInAPIError):
     reason = "linkedin_session_unavailable"
 
 
+class CredentialsRejected(SessionUnavailable):
+    """LinkedIn refused the email/password pair outright.
+
+    Separated from the generic session failure because the remedy is completely
+    different -- a wrong password is fixed by fixing the password, not by
+    hunting for an expired cookie. Repeated failed logins are also themselves a
+    risk signal to LinkedIn, so this one should stop a human, not trigger a retry.
+    """
+
+    reason = "linkedin_credentials_rejected"
+
+
 class ChallengeRequired(SessionUnavailable):
     """LinkedIn interrupted login with a challenge.
 

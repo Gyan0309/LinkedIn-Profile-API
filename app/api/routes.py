@@ -4,6 +4,10 @@ Four routes and no more. `/healthz` is for the platform, `/v1/session` is for
 whoever operates the service, and `/v1/profile` is the product. `/v1/demo`
 exists only so a reviewer with no API key can see what the shape looks like
 before deciding whether to ask for one.
+
+Every decision point in `/v1/profile` logs a stage line -- caller tier, resolved
+identifier, authorisation, cache, then the outcome -- so the log shows *why* a
+request did what it did, not merely that it happened.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ from fastapi import APIRouter, Query, Request
 
 from app.api.deps import authorise_profile, resolve_caller
 from app.linkedin.urls import canonical_profile_url, extract_public_identifier
+from app.logging_config import stage
 from app.schema import ProfileResponse, ResponseMeta
 
 logger = logging.getLogger(__name__)
@@ -54,6 +59,8 @@ async def session_status(request: Request) -> dict[str, object]:
     authorise_profile(caller, "__session__", state.settings)
 
     session = state.sessions.current
+    stage(logger, "session", "diagnostics read", tier=caller.tier)
+
     return {
         "session": session.redacted() if session else None,
         "query_ids": state.registry.snapshot(),
@@ -101,9 +108,14 @@ async def get_profile(
     started = time.perf_counter()
 
     caller = resolve_caller(request, state.settings)
+    stage(logger, "caller", tier=caller.tier, id=caller.identifier)
+
     public_identifier = extract_public_identifier(url)
+    stage(logger, "resolved", identifier=public_identifier)
+
     authorise_profile(caller, public_identifier, state.settings)
     state.limiter.check(caller)
+    stage(logger, "authorised", **state.limiter.snapshot(caller))
 
     cache_status = "miss"
     cached = None if refresh else await state.cache.get(public_identifier)
@@ -111,7 +123,10 @@ async def get_profile(
     if cached is not None:
         cache_status = "hit"
         profile, source, unavailable = cached
+        stage(logger, "cache", "HIT - no LinkedIn call", identifier=public_identifier)
     else:
+        reason = "refresh requested" if refresh else "not cached"
+        stage(logger, "cache", f"MISS ({reason}) - fetching upstream")
         result = await state.fetcher.fetch(public_identifier)
         profile = result.profile
         source = result.source_label
@@ -119,14 +134,23 @@ async def get_profile(
         await state.cache.set(public_identifier, (profile, source, unavailable))
 
     duration_ms = int((time.perf_counter() - started) * 1000)
-    logger.info(
-        "profile %s served source=%s cache=%s unavailable=%d in %dms",
-        public_identifier,
-        source,
-        cache_status,
-        len(unavailable),
-        duration_ms,
+    stage(
+        logger,
+        "served",
+        profile.name.full or "(no name)",
+        source=source,
+        cache=cache_status,
+        unavailable=len(unavailable),
+        ms=duration_ms,
     )
+    if unavailable:
+        stage(
+            logger,
+            "gaps",
+            "sections that could NOT be fetched",
+            sections=",".join(unavailable),
+            level=logging.WARNING,
+        )
 
     return ProfileResponse(
         meta=ResponseMeta(

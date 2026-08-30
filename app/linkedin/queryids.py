@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 
 from app.config import Settings
 from app.errors import QueryIdDiscoveryFailed
+from app.logging_config import stage
 
 if TYPE_CHECKING:
     from app.linkedin.client import VoyagerClient
@@ -53,6 +54,12 @@ QUERY_PROFILE_CARDS = "voyagerIdentityDashProfileCards"
 WANTED = (QUERY_PROFILE_BY_VANITY, QUERY_PROFILE_COMPONENTS, QUERY_PROFILE_CARDS)
 
 CACHE_TTL_SECONDS = 24 * 3600
+
+# Minimum gap between two rediscoveries. LinkedIn rotating its queryIds is a rare
+# event -- twice inside half a minute is not that, it is us thrashing. Section
+# fetches run in waves, so without this bound each wave observes a fresh
+# generation and rotates again, and one rotation becomes one per wave.
+MIN_SECONDS_BETWEEN_ROTATIONS = 30.0
 MAX_BUNDLES_SCANNED = 40
 BUNDLE_CONCURRENCY = 4
 
@@ -65,27 +72,59 @@ class QueryIdRegistry:
         self._client = client
         self._discovered: dict[str, str] = {}
         self._discovered_at: float = 0.0
+        self._generation = 0
+        self._last_rotation_at = float("-inf")
         self._lock = asyncio.Lock()
 
     @property
     def pinned(self) -> dict[str, str]:
         return self._settings.pinned_query_ids
 
+    @property
+    def generation(self) -> int:
+        """Bumped on every invalidation.
+
+        A caller captures this before a request and hands it back if that request
+        is rejected. That is what lets twelve concurrent section fetches, all
+        rejected by the same stale id, trigger exactly one rediscovery between
+        them instead of twelve.
+        """
+        return self._generation
+
+    def is_pinned(self, name: str) -> bool:
+        return bool(self.pinned.get(name))
+
     def _cache_is_fresh(self) -> bool:
         return bool(self._discovered) and (
             time.time() - self._discovered_at < CACHE_TTL_SECONDS
         )
 
-    def invalidate(self) -> None:
-        """Force the next lookup to rediscover.
+    def invalidate(self, seen_generation: int | None = None) -> bool:
+        """Force the next lookup to rediscover. Returns whether this call did it.
 
-        Called when Voyager rejects a queryId, which is the only reliable signal
-        that LinkedIn has shipped a new bundle.
+        Two guards, because they catch different shapes of the same problem.
+        The generation check ignores a stale report from a request that failed
+        before someone else already rotated. The cooldown bounds the rest: section
+        fetches run in waves, so each wave sees a legitimately fresh generation
+        and would otherwise rotate again.
         """
+        if seen_generation is not None and seen_generation != self._generation:
+            return False
+
+        elapsed = time.monotonic() - self._last_rotation_at
+        if elapsed < MIN_SECONDS_BETWEEN_ROTATIONS:
+            # Already rotated moments ago. The caller will pick up the ids that
+            # rotation installed rather than triggering another pass.
+            return False
+
         if self._discovered:
-            logger.warning("queryId cache invalidated; will rediscover")
+            stage(logger, "queryid", "cache invalidated - will rediscover",
+                  level=logging.WARNING)
         self._discovered = {}
         self._discovered_at = 0.0
+        self._last_rotation_at = time.monotonic()
+        self._generation += 1
+        return True
 
     async def get(self, name: str) -> str:
         """Return the queryId for a query name, discovering it if necessary."""
@@ -133,7 +172,8 @@ class QueryIdRegistry:
                     "session is most likely logged out or challenged."
                 )
 
-            logger.info("scanning %d LinkedIn bundles for queryIds", len(bundle_urls))
+            stage(logger, "queryid", "scanning LinkedIn JS bundles",
+                  bundles=len(bundle_urls))
             found = await self._scan_bundles(bundle_urls)
 
             if not found:
@@ -144,7 +184,8 @@ class QueryIdRegistry:
 
             self._discovered = found
             self._discovered_at = time.time()
-            logger.info("discovered queryIds for: %s", ", ".join(sorted(found)))
+            stage(logger, "queryid", "discovered", count=len(found),
+                  wanted=sum(1 for n in WANTED if n in found))
 
     @staticmethod
     def _bundle_urls(html: str) -> list[str]:

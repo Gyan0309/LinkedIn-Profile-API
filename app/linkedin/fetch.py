@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -41,6 +42,7 @@ from app.linkedin.queryids import (
     QUERY_PROFILE_COMPONENTS,
     QueryIdRegistry,
 )
+from app.logging_config import stage
 from app.schema import Connections, Location, Name, Profile
 
 logger = logging.getLogger(__name__)
@@ -112,8 +114,12 @@ class ProfileFetcher:
     async def fetch(self, public_identifier: str) -> FetchResult:
         result = FetchResult(profile=Profile(public_identifier=public_identifier))
         pending = set(SECTION_MAPPERS)
+        chain_started = time.perf_counter()
+        stage(logger, "chain", "starting", identifier=public_identifier,
+              sections=len(pending))
 
         # --- S1: GraphQL profile cards --------------------------------------
+        stage(logger, "S1 graphql", "trying GraphQL profile cards")
         try:
             await self._fetch_graphql(public_identifier, result, pending)
         except (LinkedInBlocked, SessionUnavailable):
@@ -126,10 +132,13 @@ class ProfileFetcher:
         except ProfileNotFound:
             raise
         except LinkedInAPIError as exc:
-            logger.warning("graphql strategy failed for %s: %s", public_identifier, exc)
+            stage(logger, "S1 graphql", "FAILED, falling through", error=exc.reason,
+                  detail=exc.message, level=logging.WARNING)
 
         # --- S2: legacy profileView -----------------------------------------
         if pending or not result.profile.name.full:
+            stage(logger, "S2 profileview", "trying legacy REST for missing sections",
+                  missing=len(pending))
             try:
                 await self._fetch_profileview(public_identifier, result, pending)
             except (LinkedInBlocked, SessionUnavailable):
@@ -138,18 +147,19 @@ class ProfileFetcher:
                 if not result.sources:
                     raise
             except LinkedInAPIError as exc:
-                logger.warning(
-                    "profileView strategy failed for %s: %s", public_identifier, exc
-                )
+                stage(logger, "S2 profileview", "FAILED, falling through",
+                      error=exc.reason, level=logging.WARNING)
 
         # --- S3: dash REST ---------------------------------------------------
         if not result.sources:
+            stage(logger, "S3 dash", "last resort - top card only")
             try:
                 await self._fetch_dash(public_identifier, result)
             except (LinkedInBlocked, SessionUnavailable):
                 raise
             except LinkedInAPIError as exc:
-                logger.warning("dash strategy failed for %s: %s", public_identifier, exc)
+                stage(logger, "S3 dash", "FAILED", error=exc.reason,
+                      level=logging.WARNING)
 
         if not result.sources:
             raise UpstreamUnavailable(
@@ -158,6 +168,15 @@ class ProfileFetcher:
             )
 
         result.sections_unavailable = sorted(pending)
+        stage(
+            logger,
+            "chain",
+            "done",
+            source=result.source_label,
+            served=len(SECTION_MAPPERS) - len(pending),
+            unavailable=len(pending),
+            ms=int((time.perf_counter() - chain_started) * 1000),
+        )
         return result
 
     # --- S1 -----------------------------------------------------------------
@@ -176,6 +195,9 @@ class ProfileFetcher:
 
         _apply_top_card(entity, result.profile, public_identifier)
         result.sources.add(SOURCE_GRAPHQL)
+        stage(logger, "S1 graphql", "top card ok",
+              name=result.profile.name.full or "(none)",
+              urn=(result.profile.profile_urn or "(none)")[:44])
 
         profile_urn = result.profile.profile_urn
         if not profile_urn:
@@ -186,6 +208,8 @@ class ProfileFetcher:
             )
             return
 
+        stage(logger, "S1 graphql", "fetching section cards",
+              count=len(pending), concurrency=SECTION_CONCURRENCY)
         await self._fetch_sections(profile_urn, result, pending)
 
     async def _fetch_sections(
@@ -209,14 +233,17 @@ class ProfileFetcher:
                 except LinkedInAPIError as exc:
                     # Left in `pending`, so it is reported as unavailable rather
                     # than returned as an empty list.
-                    logger.info("section %s unavailable via graphql: %s", name, exc)
+                    stage(logger, "  section", name, result="unavailable",
+                          error=exc.reason)
                     return
 
                 resolved = normalize.resolve(payload)
                 rows = components.rows_from_card(resolved)
                 mapper, _ = SECTION_MAPPERS[name]
-                setattr(result.profile, name, mapper(rows))
+                values = mapper(rows)
+                setattr(result.profile, name, values)
                 pending.discard(name)
+                stage(logger, "  section", name, result="ok", items=len(values))
 
         await asyncio.gather(*(one(name) for name in sorted(pending)))
 
@@ -229,17 +256,45 @@ class ProfileFetcher:
         rejected then the problem is the query shape, not the id, and looping
         would only burn requests against an account that cannot afford them.
         """
+        # Captured before the call so a rejection is attributed to the id
+        # generation that actually failed, not to whatever is current by the time
+        # the failure is handled.
+        generation = self._registry.generation
+        stale_id = await self._registry.get(query_name)
         params = {
             "includeWebMetadata": "true",
             "variables": _restli_variables(variables),
-            "queryId": await self._registry.get(query_name),
+            "queryId": stale_id,
         }
+
         try:
             return await self._client.get_voyager("graphql", params)
         except QueryRejected:
-            logger.warning("queryId for %s rejected; rediscovering once", query_name)
-            self._registry.invalidate()
-            params["queryId"] = await self._registry.get(query_name)
+            if self._registry.is_pinned(query_name):
+                # An operator pinned this id deliberately. Rediscovery would hand
+                # back the same pinned value, so retrying is pure waste -- and
+                # quietly ignoring the pin would be worse. Fail loudly instead.
+                stage(logger, "queryid", "REJECTED and PINNED - not rediscovering",
+                      query=query_name, level=logging.ERROR)
+                raise
+
+            rotated = self._registry.invalidate(generation)
+            stage(
+                logger,
+                "queryid",
+                "REJECTED - rediscovering" if rotated else "REJECTED - already rotated",
+                query=query_name,
+                level=logging.WARNING,
+            )
+
+            fresh_id = await self._registry.get(query_name)
+            if fresh_id == stale_id:
+                # Rediscovery produced the same id, so the query shape is the
+                # problem and not the id. Retrying would spend another request to
+                # learn the same thing.
+                raise
+
+            params["queryId"] = fresh_id
             return await self._client.get_voyager("graphql", params)
 
     # --- S2 -----------------------------------------------------------------
@@ -272,6 +327,11 @@ class ProfileFetcher:
         # the member has an empty profile -- so it does not get to claim the source.
         if filled:
             result.sources.add(SOURCE_PROFILEVIEW)
+            stage(logger, "S2 profileview", "backfilled sections",
+                  still_missing=len(pending))
+        else:
+            stage(logger, "S2 profileview",
+                  "returned 200 but nothing usable - endpoint likely retired")
 
     # --- S3 -----------------------------------------------------------------
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 import time
 from typing import Any
 from urllib.parse import urlencode
@@ -31,6 +32,7 @@ from app.errors import (
     UpstreamUnavailable,
 )
 from app.linkedin.auth import USER_AGENT, SessionManager
+from app.logging_config import stage
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,23 @@ CIRCUIT_OPEN_SECONDS = 300
 # Voyager's rest.li query syntax uses literal parentheses, colons, commas and
 # asterisks. Percent-encoding them yields a 400, so they are passed through.
 RESTLI_SAFE_CHARS = "(),:*~!"
+
+
+def _short(url: str) -> str:
+    """A log-friendly label for a Voyager URL.
+
+    Full URLs are long, repetitive, and carry the query string -- which is
+    exactly where a secret would hide. The path plus the interesting query
+    parameter is what actually identifies a call.
+    """
+    trimmed = url.replace(VOYAGER_BASE + "/", "")
+    path, _, query = trimmed.partition("?")
+    for marker in ("sectionType:", "vanityName:", "memberIdentity="):
+        if marker in query:
+            fragment = query.split(marker, 1)[1]
+            value = re.split(r"[,)&]", fragment)[0]
+            return f"{path}[{marker.rstrip(':=')}={value}]"
+    return path
 
 
 class OutboundLimiter:
@@ -210,17 +229,31 @@ class VoyagerClient:
             if accept is not None:
                 headers["Accept"] = accept
 
+            call_started = time.monotonic()
             try:
                 response = await self._client.get(url, headers=headers)
             except httpx.HTTPError as exc:
                 last_error = exc
-                logger.warning("transport error on attempt %d: %s", attempt, exc)
+                stage(logger, "  voyager", _short(url), result="TRANSPORT ERROR",
+                      attempt=attempt, detail=str(exc)[:80], level=logging.WARNING)
                 if attempt == MAX_ATTEMPTS:
                     break
                 await self._backoff(attempt)
                 continue
 
             status = response.status_code
+            elapsed_ms = int((time.monotonic() - call_started) * 1000)
+            # Every upstream call is logged, because upstream calls are the
+            # scarce resource here -- if the count looks wrong, that is the bug.
+            stage(
+                logger,
+                "  voyager",
+                _short(url),
+                status=status,
+                ms=elapsed_ms,
+                attempt=attempt,
+                level=logging.INFO if status == 200 else logging.WARNING,
+            )
 
             if status == 200:
                 self.breaker.reset()
@@ -247,11 +280,14 @@ class VoyagerClient:
             # A dead cookie. Worth exactly one re-acquisition, not a retry loop.
             if status == 401:
                 if session_retried:
+                    stage(logger, "  session", "still 401 after refresh - giving up",
+                          level=logging.ERROR)
                     raise SessionUnavailable(
                         "LinkedIn rejected the session (401). The li_at cookie has "
                         "expired -- supply a fresh one."
                     )
-                logger.warning("401 from Voyager; re-acquiring session once")
+                stage(logger, "  session", "401 - re-acquiring once",
+                      level=logging.WARNING)
                 self._sessions.invalidate()
                 session_retried = True
                 continue

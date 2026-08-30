@@ -431,13 +431,61 @@ concurrency of 3 with per-request jitter — twelve simultaneous requests from o
 session is a recognisable automation signature, and evenly-spaced requests are
 themselves a tell.
 
-### Keeping secrets out of logs
+### Logging: reading what actually happened
 
-A service holding a session cookie will eventually log one by accident — in an
-exception repr, a retry warning, a header dump. `app/logging_config.py` installs
-a filter that rewrites formatted records, matching on **value shape** as well as
-key name, so a bare `ajax:` session id is caught anywhere it appears. A secret has
-to survive both code review and the filter to reach a log aggregator.
+Every request gets a short id, carried in a `ContextVar` so that logs four layers
+down (the HTTP client) are correlated without threading an id through every
+signature. It comes back as `X-Request-ID`, so a caller reporting a problem can
+quote it and you land on the right lines. Supply your own and it is echoed, so a
+trace can span a proxy.
+
+A full request reads as one story:
+
+```
+19:53:35 INFO  [904e5f] -> request       GET /v1/profile?url=https://www.linkedin.com/in/williamhgates
+19:53:35 INFO  [904e5f] caller           tier=demo id=ip:127.0.0.1
+19:53:35 INFO  [904e5f] resolved         identifier=williamhgates
+19:53:35 INFO  [904e5f] authorised       tier=demo limit_per_hour=20 used=1
+19:53:35 INFO  [904e5f] cache            MISS (not cached) - fetching upstream
+19:53:35 INFO  [904e5f] chain            starting identifier=williamhgates sections=12
+19:53:35 INFO  [904e5f] S1 graphql       trying GraphQL profile cards
+19:53:35 INFO  [904e5f] session          acquired source=env-cookie li_at_fingerprint=AQED...0001
+19:53:35 INFO  [904e5f]   voyager        graphql[vanityName=williamhgates] status=200 ms=812
+19:53:35 INFO  [904e5f] S1 graphql       top card ok name=Bill Gates urn=urn:li:fsd_profile:ACoAA...
+19:53:35 INFO  [904e5f] S1 graphql       fetching section cards count=12 concurrency=3
+19:53:36 INFO  [904e5f]   voyager        graphql[sectionType=experience] status=200 ms=390
+19:53:36 INFO  [904e5f]   section        experience result=ok items=2
+19:53:36 WARNING [904e5f]  voyager        graphql[sectionType=patents] status=400 ms=88
+19:53:36 INFO  [904e5f]   section        patents result=unavailable error=query_rejected
+19:53:37 INFO  [904e5f] S2 profileview   trying legacy REST for missing sections missing=10
+19:53:38 INFO  [904e5f] S2 profileview   backfilled sections still_missing=1
+19:53:38 INFO  [904e5f] chain            done source=mixed served=11 unavailable=1 ms=2560
+19:53:38 WARNING [904e5f] gaps           sections that could NOT be fetched sections=patents
+19:53:38 INFO  [904e5f] served           Bill Gates source=mixed cache=hit unavailable=1 ms=2576
+19:53:38 INFO  [904e5f] <- request       status=200 ms=2580
+```
+
+**Every upstream call is logged with its status and timing.** Upstream calls are
+the scarce resource — if the count looks wrong, that *is* the bug. That property
+paid for itself immediately: the first trace showed `queryid REJECTED —
+rediscovering` firing six times in one request, because twelve concurrent
+sections were each independently invalidating the cache. Bounded per call, but
+not across calls. It would have doubled the request count against a rotated
+queryId, and nothing else would have surfaced it. See
+`MIN_SECONDS_BETWEEN_ROTATIONS` in `queryids.py`.
+
+Lines are uniform, so `grep 'S1'`, `grep 'section'` or `grep 'voyager'` each pull
+a coherent slice without a parser. `LOG_LEVEL=WARNING` reduces this to problems
+only; uvicorn's own access log is silenced because it duplicates these lines
+without the request id.
+
+**Redaction.** A service holding a session cookie will eventually log one by
+accident — in an exception repr, a retry warning, a header dump.
+`app/logging_config.py` installs a filter that rewrites formatted records,
+matching on **value shape** as well as key name, so a bare `ajax:` session id is
+caught anywhere it appears, including via a deferred `%s` argument. A secret has
+to survive both code review and the filter to reach a log aggregator, and the
+filter has its own tests.
 
 ---
 
@@ -502,7 +550,7 @@ The environment is scrubbed of credential variables before settings are built, s
 a developer with a populated `.env` gets the same run as CI does with none.
 
 ```bash
-pytest          # 116 tests
+pytest          # 148 tests
 ruff check .
 ```
 
@@ -526,7 +574,13 @@ What the tests actually pin down, beyond the happy path:
 - **A `profileView` that returns 200 with nothing does not claim to be the source.**
 - **A failure is never dressed up as an empty profile** — the response has no
   `profile` key at all.
-- **Session diagnostics never leak the cookie.**
+- **Session diagnostics never leak the cookie**, and the log redaction filter
+  catches a cookie passed as a deferred `%s` argument, not just an inline one.
+- **Concurrent section rejections trigger one rediscovery, not twelve.**
+- **A pinned queryId is never silently worked around** -- it fails loudly.
+- **A `.env` file with `API_KEYS=a,b` actually loads.** It did not before:
+  pydantic-settings JSON-decodes list fields from dotenv before validators
+  run, so the app started fine in tests and refused to start in production.
 
 ---
 

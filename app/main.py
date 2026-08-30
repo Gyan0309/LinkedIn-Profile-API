@@ -14,6 +14,7 @@ dressed up as an empty profile.
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -30,7 +31,13 @@ from app.linkedin.auth import SessionManager
 from app.linkedin.client import VoyagerClient
 from app.linkedin.fetch import ProfileFetcher
 from app.linkedin.queryids import QueryIdRegistry
-from app.logging_config import configure_logging
+from app.logging_config import (
+    configure_logging,
+    get_request_id,
+    new_request_id,
+    set_request_id,
+    stage,
+)
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -90,18 +97,59 @@ app = FastAPI(
 app.include_router(router)
 
 
+@app.middleware("http")
+async def trace_requests(request: Request, call_next):
+    """Assign a request id and bookend every request with a log line.
+
+    The id is echoed in the `X-Request-ID` response header, so a caller reporting
+    a problem can quote it and land directly on the right lines in the log
+    instead of describing what they saw.
+    """
+    incoming = request.headers.get("x-request-id", "").strip()
+    # Honour a caller-supplied id so a trace can span a proxy, but bound it --
+    # this value goes into every log line and must not become a payload.
+    request_id = incoming[:32] if incoming else new_request_id()
+    set_request_id(request_id)
+
+    started = time.perf_counter()
+    query = f"?{request.url.query}" if request.url.query else ""
+    stage(logger, "-> request", f"{request.method} {request.url.path}{query}")
+
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed = int((time.perf_counter() - started) * 1000)
+        stage(logger, "<- request", "unhandled exception", ms=elapsed,
+              level=logging.ERROR)
+        raise
+
+    elapsed = int((time.perf_counter() - started) * 1000)
+    level = logging.WARNING if response.status_code >= 500 else logging.INFO
+    stage(
+        logger,
+        "<- request",
+        status=response.status_code,
+        ms=elapsed,
+        level=level,
+    )
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
 @app.exception_handler(LinkedInAPIError)
 async def handle_api_error(_: Request, exc: LinkedInAPIError) -> JSONResponse:
     """Every deliberate failure, rendered with its stable reason code."""
     body: dict[str, Any] = {"error": exc.reason, "message": exc.message}
-    headers = {}
+    headers = {"X-Request-ID": get_request_id()}
 
     if exc.retry_after is not None:
         body["retry_after_seconds"] = exc.retry_after
         headers["Retry-After"] = str(exc.retry_after)
 
-    if exc.status_code >= 500:
-        logger.error("%s: %s", exc.reason, exc.message)
+    # 4xx is the caller's problem and is expected traffic; 5xx is ours.
+    level = logging.ERROR if exc.status_code >= 500 else logging.WARNING
+    stage(logger, "FAILED", exc.message, error=exc.reason, status=exc.status_code,
+          level=level)
 
     return JSONResponse(status_code=exc.status_code, content=body, headers=headers)
 

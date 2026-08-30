@@ -26,7 +26,8 @@ from dataclasses import dataclass, field
 import httpx
 
 from app.config import Settings
-from app.errors import ChallengeRequired, SessionUnavailable
+from app.errors import ChallengeRequired, CredentialsRejected, SessionUnavailable
+from app.logging_config import stage
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +110,7 @@ class SessionManager:
             if self._session is not None:
                 return self._session
             self._session = await self._acquire()
-            logger.info("linkedin session acquired via %s", self._session.source)
+            stage(logger, "session", "acquired", **self._session.redacted())
             return self._session
 
     def invalidate(self) -> None:
@@ -118,9 +119,8 @@ class SessionManager:
         Called on a 401 from Voyager, which is what a dead cookie looks like.
         """
         if self._session is not None:
-            logger.warning(
-                "linkedin session invalidated after %.0fs", self._session.age_seconds
-            )
+            stage(logger, "session", "invalidated",
+                  age_s=round(self._session.age_seconds), level=logging.WARNING)
         self._session = None
 
     async def _acquire(self) -> LinkedInSession:
@@ -195,7 +195,11 @@ class SessionManager:
     def _raise_for_login_result(response: httpx.Response) -> None:
         """Map the login outcome onto our typed failures."""
         if response.status_code == 401:
-            raise SessionUnavailable("LinkedIn rejected the credentials (401).")
+            raise CredentialsRejected(
+                "LinkedIn rejected the email/password pair (401). Either they are "
+                "wrong, or the account requires a browser login. Do not retry in a "
+                "loop -- repeated failed logins are themselves a risk signal."
+            )
         if response.status_code == 999:
             raise SessionUnavailable(
                 "LinkedIn blocked the login request outright (HTTP 999). The host IP "
@@ -217,6 +221,8 @@ class SessionManager:
                 "challenges. Log in from a browser, then set LINKEDIN_LI_AT from "
                 "that session's cookie."
             )
+        if result in {"BAD_PASSWORD", "BAD_EMAIL", "BAD_USERNAME"}:
+            raise CredentialsRejected(f"LinkedIn login failed: {result}.")
         if result:
             raise SessionUnavailable(f"LinkedIn login failed: {result}.")
         if response.status_code >= 400:

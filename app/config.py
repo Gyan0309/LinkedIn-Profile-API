@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
+from typing import Annotated
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -26,8 +27,12 @@ class Settings(BaseSettings):
     linkedin_password: str = ""
 
     # --- This API's own auth ------------------------------------------------
-    api_keys: list[str] = Field(default_factory=list)
-    demo_profiles: list[str] = Field(
+    # NoDecode is load-bearing. Without it pydantic-settings JSON-decodes a
+    # list-typed field as it reads the dotenv file, which happens *before* any
+    # validator runs -- so `API_KEYS=a,b` in a .env raises SettingsError and the
+    # app never starts. NoDecode hands the raw string to `_split_csv` instead.
+    api_keys: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    demo_profiles: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["williamhgates", "satyanadella", "jeffweiner08"]
     )
 
@@ -43,11 +48,7 @@ class Settings(BaseSettings):
     @field_validator("api_keys", "demo_profiles", mode="before")
     @classmethod
     def _split_csv(cls, v: object) -> object:
-        """Accept `a,b,c` from the environment as a list.
-
-        pydantic-settings would otherwise try to JSON-decode a bare comma string
-        for a list-typed field and fail on the first non-JSON value.
-        """
+        """Accept `a,b,c` from the environment or a .env file as a list."""
         if isinstance(v, str):
             return [item.strip() for item in v.split(",") if item.strip()]
         return v

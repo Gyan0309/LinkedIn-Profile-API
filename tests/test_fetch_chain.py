@@ -306,10 +306,15 @@ async def test_stale_query_id_is_rediscovered_once_then_retried(
 
 
 @respx.mock
-async def test_rediscovery_is_bounded_to_one_retry(
+@respx.mock
+async def test_rediscovery_yielding_the_same_id_does_not_retry(
     fetcher: ProfileFetcher, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If the fresh id is also rejected, stop -- do not loop burning requests."""
+    """If discovery hands back the id that just failed, the id is not the problem.
+
+    Retrying it would spend a second request to learn exactly what the first one
+    already established, against an account with a small budget.
+    """
     attempts: list[str] = []
 
     async def fake_discover(self) -> None:
@@ -334,5 +339,127 @@ async def test_rediscovery_is_bounded_to_one_retry(
     with pytest.raises(UpstreamUnavailable):
         await fetcher.fetch(SLUG)
 
-    # The vanity lookup is tried exactly twice: original, then rediscovered.
+    assert len(attempts) == 1
+
+
+@respx.mock
+async def test_a_genuinely_new_id_is_retried_exactly_once(
+    fetcher: ProfileFetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rotated id gets one retry, and only one."""
+    attempts: list[str] = []
+    rotations = {"n": 0}
+
+    async def fake_discover(self) -> None:
+        rotations["n"] += 1
+        marker = chr(ord("a") + rotations["n"]) * 32
+        self._discovered = {
+            "voyagerIdentityDashProfiles": marker,
+            "voyagerIdentityDashProfileComponents": marker,
+        }
+        self._discovered_at = 1e12
+
+    monkeypatch.setattr(QueryIdRegistry, "_discover", fake_discover)
+    monkeypatch.setattr(type(fetcher._registry), "pinned", property(lambda self: {}))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "vanityName" in request.url.params.get("variables", ""):
+            attempts.append(request.url.params.get("queryId", ""))
+        return httpx.Response(400)
+
+    respx.get(url__startswith=GRAPHQL).mock(side_effect=handler)
+    respx.get(PROFILEVIEW).mock(return_value=httpx.Response(500))
+    respx.get(url__startswith=DASH).mock(return_value=httpx.Response(500))
+
+    with pytest.raises(UpstreamUnavailable):
+        await fetcher.fetch(SLUG)
+
     assert len(attempts) == 2
+    assert attempts[0] != attempts[1]
+
+
+@respx.mock
+async def test_concurrent_section_rejections_rediscover_only_once(
+    fetcher: ProfileFetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Twelve sections rejected by one stale id must not cause twelve rediscoveries.
+
+    Without the generation guard each concurrent section independently threw away
+    the fix the previous one had just installed, so a single rotation cost twelve
+    discovery passes and doubled the upstream request count.
+    """
+    discoveries = {"n": 0}
+
+    async def fake_discover(self) -> None:
+        discoveries["n"] += 1
+        marker = chr(ord("a") + discoveries["n"]) * 32
+        self._discovered = {
+            "voyagerIdentityDashProfiles": marker,
+            "voyagerIdentityDashProfileComponents": marker,
+        }
+        self._discovered_at = 1e12
+
+    monkeypatch.setattr(QueryIdRegistry, "_discover", fake_discover)
+    monkeypatch.setattr(type(fetcher._registry), "pinned", property(lambda self: {}))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        variables = request.url.params.get("variables", "")
+        if "vanityName" in variables:
+            return httpx.Response(200, json=load_fixture("graphql_profile.json"))
+        # Every section card is rejected, all with the same stale id.
+        return httpx.Response(400)
+
+    respx.get(url__startswith=GRAPHQL).mock(side_effect=handler)
+    respx.get(PROFILEVIEW).mock(return_value=httpx.Response(404))
+
+    result = await fetcher.fetch(SLUG)
+
+    # One discovery to seed the ids, one to rotate them. Not one per section.
+    assert discoveries["n"] <= 2
+    assert len(result.sections_unavailable) == 12
+
+
+@respx.mock
+async def test_a_pinned_id_is_never_rediscovered(
+    fetcher: ProfileFetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pin is an operator decision. Rediscovery would return the same value.
+
+    Silently working around the pin would be worse than failing, so a rejected
+    pin fails loudly and costs exactly one request.
+    """
+    discoveries = {"n": 0}
+
+    async def fake_discover(self) -> None:
+        discoveries["n"] += 1
+
+    monkeypatch.setattr(QueryIdRegistry, "_discover", fake_discover)
+
+    attempts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(request.url.params.get("queryId", ""))
+        return httpx.Response(400)
+
+    respx.get(url__startswith=GRAPHQL).mock(side_effect=handler)
+    respx.get(PROFILEVIEW).mock(return_value=httpx.Response(500))
+    respx.get(url__startswith=DASH).mock(return_value=httpx.Response(500))
+
+    with pytest.raises(UpstreamUnavailable):
+        await fetcher.fetch(SLUG)
+
+    assert discoveries["n"] == 0
+    assert len(attempts) == 1
+
+
+def test_stale_generation_reports_are_ignored(fetcher: ProfileFetcher) -> None:
+    """A late rejection from an already-rotated generation must not re-invalidate."""
+    registry = fetcher._registry
+    first = registry.generation
+
+    assert registry.invalidate(first) is True
+    assert registry.generation == first + 1
+
+    # A second coroutine reporting the same old generation arrives too late.
+    assert registry.invalidate(first) is False
+    assert registry.generation == first + 1
