@@ -1,20 +1,10 @@
-"""The fetch strategy chain.
+"""The fetch chain: identity first, then sections, merged per section.
 
-LinkedIn exposes the same profile through several generations of endpoint, none
-of which is reliably available. The GraphQL cards are what linkedin.com itself
-calls today. The legacy `profileView` REST endpoint still answers for some
-accounts and regions and not others. The dash REST collection answers when the
-other two do not.
+LinkedIn serves the same profile through several generations of endpoint, none
+reliably available, so this tries them in order and takes what each gives.
 
-So rather than picking one and hoping, this fetches through a chain and merges
-per section. If GraphQL returns experience and education but drops
-certifications, `profileView` backfills only the certifications -- the caller
-gets the fullest profile available rather than the intersection of what one
-endpoint happened to serve.
-
-What it will not do is quietly paper over a gap. A section that no strategy could
-fetch is named in `sections_unavailable`, so an empty `certifications` list always
-means the person has none, never that we failed to ask.
+A section no strategy could fetch is named in `sections_unavailable`, so an
+empty list always means the person has none, never that we failed to ask.
 """
 
 from __future__ import annotations
@@ -33,7 +23,7 @@ from app.errors import (
     SessionUnavailable,
     UpstreamUnavailable,
 )
-from app.extract import components, profileview
+from app.extract import components, dash, profileview
 from app.extract.common import clean_text, image_from_vector, parse_count, text_of
 from app.linkedin import normalize
 from app.linkedin.client import VoyagerClient
@@ -41,6 +31,7 @@ from app.linkedin.queryids import (
     QUERY_PROFILE_BY_VANITY,
     QUERY_PROFILE_COMPONENTS,
     QueryIdRegistry,
+    profile_page_url,
 )
 from app.logging_config import stage
 from app.schema import Connections, Location, Name, Profile
@@ -50,6 +41,13 @@ logger = logging.getLogger(__name__)
 SOURCE_GRAPHQL = "voyager-graphql"
 SOURCE_PROFILEVIEW = "voyager-rest-profileview"
 SOURCE_DASH = "voyager-rest-dash"
+SOURCE_DASH_SECTIONS = "voyager-dash-collections"
+
+# Makes the identity call resolve the Geo and Industry entities the Profile
+# only references by URN. Without it, location and industry come back null.
+PROFILE_DECORATION = (
+    "com.linkedin.voyager.dash.deco.identity.profile.FullProfile-77"
+)
 
 # Our section name -> the sectionType LinkedIn's GraphQL card query expects.
 SECTION_TYPES: dict[str, str] = {
@@ -83,9 +81,7 @@ SECTION_MAPPERS = {
     "organizations": (components.to_organizations, profileview.organizations),
 }
 
-# Concurrent section fetches. Kept low deliberately: twelve simultaneous requests
-# from one session is a recognisable automation signature, and the outbound
-# limiter would serialise them anyway.
+# Twelve simultaneous requests from one session is a bot signature.
 SECTION_CONCURRENCY = 3
 
 
@@ -112,60 +108,56 @@ class ProfileFetcher:
         self._registry = registry
 
     async def fetch(self, public_identifier: str) -> FetchResult:
+        """Resolve who the profile is, then fill in what it contains.
+
+        Two phases because sections need the URN identity produces. As one
+        chain, a GraphQL failure lost the URN and the dash collections -- which
+        need only the URN -- never got a turn.
+        """
         result = FetchResult(profile=Profile(public_identifier=public_identifier))
         pending = set(SECTION_MAPPERS)
         chain_started = time.perf_counter()
         stage(logger, "chain", "starting", identifier=public_identifier,
               sections=len(pending))
 
-        # --- S1: GraphQL profile cards --------------------------------------
-        stage(logger, "S1 graphql", "trying GraphQL profile cards")
-        try:
-            await self._fetch_graphql(public_identifier, result, pending)
-        except (LinkedInBlocked, SessionUnavailable):
-            # Both are terminal for every strategy, so falling through would only
-            # repeat the same failure two more times. A block would additionally
-            # deepen itself: each request into a closed door counts against us.
-            # And reporting "everything failed" when the real cause is an
-            # unconfigured cookie sends the operator hunting the wrong problem.
-            raise
-        except ProfileNotFound:
-            raise
-        except LinkedInAPIError as exc:
-            stage(logger, "S1 graphql", "FAILED, falling through", error=exc.reason,
-                  detail=exc.message, level=logging.WARNING)
+        # --- Phase 1: who is this? -------------------------------------------
+        await self._resolve_identity(public_identifier, result)
+        profile_urn = result.profile.profile_urn
 
-        # --- S2: legacy profileView -----------------------------------------
-        if pending or not result.profile.name.full:
-            stage(logger, "S2 profileview", "trying legacy REST for missing sections",
-                  missing=len(pending))
+        # --- Phase 2: what is on the profile? --------------------------------
+        # Dash first: no queryId, no HTML page, typed dates.
+        if profile_urn and pending:
+            stage(logger, "S1 dash", "section collections", sections=len(pending))
+            try:
+                await self._fetch_dash_sections(profile_urn, result, pending)
+            except (LinkedInBlocked, SessionUnavailable):
+                raise
+            except LinkedInAPIError as exc:
+                stage(logger, "S1 dash", "FAILED, falling through",
+                      error=exc.reason, level=logging.WARNING)
+
+        # linkedin.com no longer calls this query, so it runs only when an
+        # operator has pinned a working id.
+        if profile_urn and pending and self._registry.pinned:
+            stage(logger, "S2 graphql", "section cards", missing=len(pending))
+            try:
+                await self._fetch_sections(profile_urn, result, pending)
+            except (LinkedInBlocked, SessionUnavailable):
+                raise
+            except LinkedInAPIError as exc:
+                stage(logger, "S2 graphql", "FAILED, falling through",
+                      error=exc.reason, level=logging.WARNING)
+
+        # Retired unevenly. Last because it is least likely to answer.
+        if pending:
+            stage(logger, "S3 profileview", "legacy REST", missing=len(pending))
             try:
                 await self._fetch_profileview(public_identifier, result, pending)
             except (LinkedInBlocked, SessionUnavailable):
                 raise
-            except ProfileNotFound:
-                if not result.sources:
-                    raise
             except LinkedInAPIError as exc:
-                stage(logger, "S2 profileview", "FAILED, falling through",
-                      error=exc.reason, level=logging.WARNING)
-
-        # --- S3: dash REST ---------------------------------------------------
-        if not result.sources:
-            stage(logger, "S3 dash", "last resort - top card only")
-            try:
-                await self._fetch_dash(public_identifier, result)
-            except (LinkedInBlocked, SessionUnavailable):
-                raise
-            except LinkedInAPIError as exc:
-                stage(logger, "S3 dash", "FAILED", error=exc.reason,
+                stage(logger, "S3 profileview", "FAILED", error=exc.reason,
                       level=logging.WARNING)
-
-        if not result.sources:
-            raise UpstreamUnavailable(
-                f"Every fetch strategy failed for {public_identifier}. LinkedIn "
-                "returned no usable profile data."
-            )
 
         result.sections_unavailable = sorted(pending)
         stage(
@@ -179,13 +171,49 @@ class ProfileFetcher:
         )
         return result
 
-    # --- S1 -----------------------------------------------------------------
+    # --- Phase 1: identity ---------------------------------------------------
 
-    async def _fetch_graphql(
-        self, public_identifier: str, result: FetchResult, pending: set[str]
+    async def _resolve_identity(
+        self, public_identifier: str, result: FetchResult
     ) -> None:
+        """Get the top card and the profile URN.
+
+        Every section endpoint is keyed on the URN, so failing here fails
+        everything.
+        """
+        # Dash first: a plain REST call with no queryId behind it.
+        try:
+            await self._identity_via_dash(public_identifier, result)
+            return
+        except (LinkedInBlocked, SessionUnavailable, ProfileNotFound):
+            raise
+        except LinkedInAPIError as exc:
+            stage(logger, "identity", "dash lookup failed", error=exc.reason,
+                  level=logging.WARNING)
+
+        try:
+            await self._identity_via_graphql(public_identifier, result)
+        except (LinkedInBlocked, SessionUnavailable, ProfileNotFound):
+            raise
+        except LinkedInAPIError as exc:
+            stage(logger, "identity", "graphql lookup failed", error=exc.reason,
+                  level=logging.ERROR)
+
+        if not result.sources:
+            raise UpstreamUnavailable(
+                f"Could not identify {public_identifier}. Neither the GraphQL "
+                "vanity-name lookup nor the dash profile collection answered, so "
+                "there is no profile URN to fetch sections with."
+            )
+
+    async def _identity_via_graphql(
+        self, public_identifier: str, result: FetchResult
+    ) -> None:
+        # Seeded from this profile's own page so discovery scans the bundles
+        # that actually carry the profile queries.
+        seed = profile_page_url(public_identifier)
         payload = await self._graphql_with_rediscovery(
-            QUERY_PROFILE_BY_VANITY, {"vanityName": public_identifier}
+            QUERY_PROFILE_BY_VANITY, {"memberIdentity": public_identifier}, seed
         )
         entity = _profile_entity(payload)
         if entity is None:
@@ -195,27 +223,114 @@ class ProfileFetcher:
 
         _apply_top_card(entity, result.profile, public_identifier)
         result.sources.add(SOURCE_GRAPHQL)
-        stage(logger, "S1 graphql", "top card ok",
+        stage(logger, "identity", "resolved via graphql",
               name=result.profile.name.full or "(none)",
               urn=(result.profile.profile_urn or "(none)")[:44])
 
-        profile_urn = result.profile.profile_urn
-        if not profile_urn:
-            # Without the URN there is nothing to key the section queries on.
-            logger.warning(
-                "no profile URN resolved for %s; skipping section cards",
-                public_identifier,
-            )
-            return
+    async def _identity_via_dash(
+        self, public_identifier: str, result: FetchResult
+    ) -> None:
+        payload = await self._client.get_voyager(
+            "identity/dash/profiles",
+            {
+                "q": "memberIdentity",
+                "memberIdentity": public_identifier,
+                # Without a decoration the Profile carries bare URNs -- geoUrn
+                # and industryUrn -- and location and industry come back null.
+                # This asks LinkedIn to include the Geo and Industry entities
+                # alongside, so the URNs resolve to real names.
+                "decorationId": PROFILE_DECORATION,
+            },
+        )
+        entity = _profile_entity(payload)
+        if entity is None:
+            raise UpstreamUnavailable("dash returned no profile entity.")
 
-        stage(logger, "S1 graphql", "fetching section cards",
-              count=len(pending), concurrency=SECTION_CONCURRENCY)
-        await self._fetch_sections(profile_urn, result, pending)
+        _apply_top_card(entity, result.profile, public_identifier)
+        result.sources.add(SOURCE_DASH)
+        stage(logger, "identity", "resolved via dash",
+              name=result.profile.name.full or "(none)",
+              urn=(result.profile.profile_urn or "(none)")[:44])
+
+    # --- Phase 2: sections ---------------------------------------------------
+
+    async def _fetch_dash_sections(
+        self, profile_urn: str, result: FetchResult, pending: set[str]
+    ) -> None:
+        """Fetch each missing section from its own dash collection."""
+        semaphore = asyncio.Semaphore(SECTION_CONCURRENCY)
+        served: list[str] = []
+
+        async def collection(path: str) -> dict[str, Any]:
+            payload = await self._client.get_voyager(
+                path,
+                {
+                    "q": "viewee",
+                    "profileUrn": profile_urn,
+                    # Without this LinkedIn pages at 20 and reports the truth
+                    # only in `paging.total`.
+                    "count": str(dash.PAGE_SIZE),
+                },
+            )
+            return normalize.resolve(payload) or payload
+
+        async def simple(name: str) -> None:
+            async with semaphore:
+                try:
+                    resolved = await collection(dash.COLLECTIONS[name])
+                except (LinkedInBlocked, SessionUnavailable):
+                    raise
+                except LinkedInAPIError as exc:
+                    stage(logger, "  section", name, via="dash",
+                          result="unavailable", error=exc.reason)
+                    return
+
+                values = dash.EXTRACTORS[name](resolved)
+                _record(name, values)
+
+        async def positions() -> None:
+            """Experience needs two collections: the groups and the roles."""
+            async with semaphore:
+                try:
+                    groups = await collection(dash.POSITION_GROUPS)
+                    roles = await collection(dash.POSITIONS)
+                except (LinkedInBlocked, SessionUnavailable):
+                    raise
+                except LinkedInAPIError as exc:
+                    stage(logger, "  section", "experience", via="dash",
+                          result="unavailable", error=exc.reason)
+                    return
+
+                _record("experience", dash.experience(groups, roles))
+
+        def _record(name: str, values: list[Any]) -> None:
+            """A 200 answered the question, including when the answer is none.
+
+            Leaving an empty section pending would report a successful fetch as
+            a failure, which is the confusion `sections_unavailable` prevents.
+            """
+            setattr(result.profile, name, values)
+            pending.discard(name)
+            served.append(name)
+            stage(logger, "  section", name, via="dash",
+                  result="ok" if values else "empty", items=len(values))
+
+        tasks = [simple(name) for name in sorted(pending) if name in dash.COLLECTIONS]
+        if "experience" in pending:
+            tasks.append(positions())
+
+        await asyncio.gather(*tasks)
+
+        if served:
+            result.sources.add(SOURCE_DASH_SECTIONS)
+            stage(logger, "S2 dash", "served sections", count=len(served),
+                  still_missing=len(pending))
 
     async def _fetch_sections(
         self, profile_urn: str, result: FetchResult, pending: set[str]
     ) -> None:
         semaphore = asyncio.Semaphore(SECTION_CONCURRENCY)
+        seed_url = profile_page_url(result.profile.public_identifier)
 
         async def one(name: str) -> None:
             async with semaphore:
@@ -227,6 +342,7 @@ class ProfileFetcher:
                             "sectionType": SECTION_TYPES[name],
                             "locale": "en_US",
                         },
+                        seed_url,
                     )
                 except (LinkedInBlocked, SessionUnavailable):
                     raise
@@ -248,19 +364,16 @@ class ProfileFetcher:
         await asyncio.gather(*(one(name) for name in sorted(pending)))
 
     async def _graphql_with_rediscovery(
-        self, query_name: str, variables: dict[str, str]
+        self,
+        query_name: str,
+        variables: dict[str, str],
+        seed_url: str | None = None,
     ) -> dict[str, Any]:
-        """Run a GraphQL query, rediscovering the queryId once if it is rejected.
-
-        Bounded to a single retry on purpose. If the freshly discovered id is also
-        rejected then the problem is the query shape, not the id, and looping
-        would only burn requests against an account that cannot afford them.
-        """
+        """Run a GraphQL query, rediscovering the queryId once if rejected."""
         # Captured before the call so a rejection is attributed to the id
-        # generation that actually failed, not to whatever is current by the time
-        # the failure is handled.
+        # generation that actually failed.
         generation = self._registry.generation
-        stale_id = await self._registry.get(query_name)
+        stale_id = await self._registry.get(query_name, self._client, seed_url)
         params = {
             "includeWebMetadata": "true",
             "variables": _restli_variables(variables),
@@ -271,9 +384,7 @@ class ProfileFetcher:
             return await self._client.get_voyager("graphql", params)
         except QueryRejected:
             if self._registry.is_pinned(query_name):
-                # An operator pinned this id deliberately. Rediscovery would hand
-                # back the same pinned value, so retrying is pure waste -- and
-                # quietly ignoring the pin would be worse. Fail loudly instead.
+                # Rediscovery would return the same pinned value.
                 stage(logger, "queryid", "REJECTED and PINNED - not rediscovering",
                       query=query_name, level=logging.ERROR)
                 raise
@@ -287,11 +398,9 @@ class ProfileFetcher:
                 level=logging.WARNING,
             )
 
-            fresh_id = await self._registry.get(query_name)
+            fresh_id = await self._registry.get(query_name, self._client, seed_url)
             if fresh_id == stale_id:
-                # Rediscovery produced the same id, so the query shape is the
-                # problem and not the id. Retrying would spend another request to
-                # learn the same thing.
+                # Same id, so the query shape is the problem, not the id.
                 raise
 
             params["queryId"] = fresh_id
@@ -336,12 +445,7 @@ class ProfileFetcher:
     # --- S3 -----------------------------------------------------------------
 
     async def _fetch_dash(self, public_identifier: str, result: FetchResult) -> None:
-        """Last resort: the dash collection, which returns the top card only.
-
-        Deliberately not treated as a full answer. It gets us a name, headline and
-        picture when nothing else responds, and every section stays pending so the
-        response says plainly that the detail is missing.
-        """
+        """Top card only. Every section stays pending and is reported missing."""
         payload = await self._client.get_voyager(
             "identity/dash/profiles",
             {"q": "memberIdentity", "memberIdentity": public_identifier},
@@ -363,12 +467,7 @@ def _restli_variables(variables: dict[str, str]) -> str:
 
 
 def _profile_entity(payload: dict[str, Any]) -> dict[str, Any] | None:
-    """Find the Profile entity in a payload, wherever LinkedIn put it.
-
-    Matched on the `$type` suffix rather than a fixed key path: the wrapper key
-    differs between the vanity-name query, the dash collection and the card
-    responses, but the entity type is the same in all three.
-    """
+    """Find the Profile entity, matching `$type` since the wrapper key varies."""
     for suffix in ("identity.profile.Profile", ".Profile"):
         candidates = normalize.entities_of_type(payload, suffix)
         for candidate in candidates:
@@ -447,36 +546,66 @@ def _pronouns(entity: dict[str, Any]) -> str | None:
 
 
 def _industry(entity: dict[str, Any]) -> str | None:
+    """Industry name, never the bare URN -- a URN looks like data but says nothing."""
     industry = entity.get("industry")
     if isinstance(industry, dict):
         return clean_text(industry.get("name")) or text_of(industry)
-    return clean_text(industry)
+    if isinstance(industry, str) and not industry.startswith("urn:"):
+        return clean_text(industry)
+    return None
 
 
 def _location(entity: dict[str, Any]) -> Location | None:
+    """Location from the resolved Geo entity.
+
+    `locationName` on the Profile is null in practice; the value lives on the
+    Geo entity the decoration pulls in.
+    """
+    raw = city = country = None
+
     geo = entity.get("geoLocation")
-    raw = None
-    country = None
     if isinstance(geo, dict):
         inner = geo.get("geo") if isinstance(geo.get("geo"), dict) else geo
         raw = clean_text(inner.get("defaultLocalizedName")) or text_of(inner)
-        country = clean_text(inner.get("country"))
+        without_country = clean_text(inner.get("defaultLocalizedNameWithoutCountryName"))
+        if without_country and without_country != raw:
+            # The two differ, so the shorter one is everything but the country
+            # and its first component is the city.
+            city = without_country.split(",")[0].strip() or None
+        elif without_country and without_country == raw:
+            # They match, which means LinkedIn had no country to strip: the
+            # profile is country-only ("India"), and there is no city.
+            country = raw
+        resolved_country = inner.get("country")
+        if isinstance(resolved_country, dict):
+            country = (
+                clean_text(resolved_country.get("defaultLocalizedName")) or country
+            )
+
     raw = (
         raw
         or clean_text(entity.get("geoLocationName"))
         or clean_text(entity.get("locationName"))
     )
-    if not raw and not country:
+
+    # `location.countryCode` is a plain two-letter code and is present even when
+    # the Geo entity was not resolved.
+    country_code = None
+    location = entity.get("location")
+    if isinstance(location, dict):
+        country_code = clean_text(location.get("countryCode"))
+
+    # The country name is the tail of the localised string when nothing resolved.
+    if not country and raw and "," in raw:
+        country = raw.rsplit(",", 1)[-1].strip() or None
+
+    if not any((raw, city, country, country_code)):
         return None
-    return Location(raw=raw, country=country)
+    return Location(raw=raw, city=city, country=country, country_code=country_code)
 
 
 def _frame_is(entity: dict[str, Any], marker: str) -> bool:
-    """LinkedIn signals #OpenToWork and #Hiring through the photo frame type.
-
-    There is no boolean field for either; the badge is a rendering concern to
-    LinkedIn, so the frame enum is the only place the fact appears.
-    """
+    """#OpenToWork and #Hiring only appear as a photo frame type, not a flag."""
     frame = entity.get("profilePictureFrameType") or entity.get(
         "profilePictureFrameTypeUrn"
     )

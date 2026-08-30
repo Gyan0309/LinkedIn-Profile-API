@@ -1,13 +1,8 @@
 """Extract profile sections from the legacy `profileView` REST response.
 
-Where the GraphQL cards carry rendered strings, this endpoint carries typed
-fields: `timePeriod.startDate.month` is an integer, `companyName` is a company
-name and nothing else. Nothing has to be parsed back out of display text, so
-where this endpoint is available the data is strictly more faithful.
-
-It is not always available. LinkedIn has been retiring it unevenly -- live for
-some accounts and regions, gone for others -- which is exactly why the fetch
-chain treats it as one strategy among several rather than the answer.
+Typed fields rather than rendered strings, so more faithful than the GraphQL
+cards where it works -- but LinkedIn is retiring it unevenly and it often
+answers 410.
 """
 
 from __future__ import annotations
@@ -41,12 +36,7 @@ from app.schema import (
 
 
 def section(payload: dict[str, Any], key: str) -> list[dict[str, Any]]:
-    """Elements of one `*View` block, tolerating either nesting the API returns.
-
-    With the normalized accept header the views hang off `data`; without it they
-    sit at the root. Both shapes turn up depending on the endpoint variant, so
-    both are checked rather than assuming one.
-    """
+    """Elements of one `*View` block. Views hang off `data` or the root."""
     for container in (payload.get("data"), payload):
         if not isinstance(container, dict):
             continue

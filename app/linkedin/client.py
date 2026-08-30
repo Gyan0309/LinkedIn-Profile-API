@@ -1,13 +1,9 @@
-"""HTTP client for LinkedIn's internal Voyager API.
+"""HTTP client for Voyager: headers, CSRF pairing, retries.
 
-Everything that makes an authenticated Voyager request work lives here: the header
-set, the CSRF pairing, the retry policy, and the refusal to retry a block.
-
-The retry policy is deliberately asymmetric. A 429 means "slow down" and is worth
-backing off into. HTTP 999 means "we have decided you are a bot" and is not --
-retrying a block is how a throttled account becomes a banned one. So a block trips
-a circuit breaker that stops outbound traffic entirely for a cooling-off period,
-and every caller during that window gets a clean 503 explaining why.
+The retry policy is asymmetric on purpose. A 429 means slow down and is worth
+backing off into; a 999 means LinkedIn has decided you are a bot and is not.
+A block trips a circuit breaker instead, stopping outbound traffic for five
+minutes.
 """
 
 from __future__ import annotations
@@ -18,16 +14,18 @@ import random
 import re
 import time
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote
 
 import httpx
 
 from app.config import Settings
 from app.errors import (
+    EndpointRetired,
     LinkedInBlocked,
     LinkedInRateLimited,
     ProfileNotFound,
     QueryRejected,
+    SessionRejected,
     SessionUnavailable,
     UpstreamUnavailable,
 )
@@ -42,18 +40,56 @@ MAX_ATTEMPTS = 3
 BACKOFF_BASE_SECONDS = 1.5
 CIRCUIT_OPEN_SECONDS = 300
 
-# Voyager's rest.li query syntax uses literal parentheses, colons, commas and
-# asterisks. Percent-encoding them yields a 400, so they are passed through.
+# rest.li tuple syntax -- `variables=(vanityName:someone)` -- must keep its
+# punctuation; percent-encoding it yields a 400.
 RESTLI_SAFE_CHARS = "(),:*~!"
+
+# But only for those parameters. `profileUrn` with literal colons made every
+# dash collection answer 400; the same request with `%3A` answered 200.
+RESTLI_TUPLE_PARAMS = frozenset({"variables"})
+
+# Public files on a cache, not API calls. Pacing them protects nothing and
+# made queryId discovery take a minute.
+ASSET_HOST = "static.licdn.com"
+
+
+def _encode_params(params: dict[str, str]) -> str:
+    """Encode per parameter: rest.li tuple syntax survives, the rest is escaped."""
+    parts = []
+    for key, value in params.items():
+        safe = RESTLI_SAFE_CHARS if key in RESTLI_TUPLE_PARAMS else ""
+        parts.append(f"{quote(str(key), safe='')}={quote(str(value), safe=safe)}")
+    return "&".join(parts)
+
+
+def _redirect_rejection(location: str) -> SessionRejected:
+    """Turn a redirect target into an explanation of what to do about it."""
+    target = location.lower()
+
+    if "checkpoint" in target or "challenge" in target:
+        return SessionRejected(
+            "LinkedIn redirected to a security checkpoint. The account needs "
+            "verifying in a browser -- log in there, clear the challenge, then "
+            "copy a fresh cookie."
+        )
+
+    if "login" in target or "authwall" in target or "uas/" in target:
+        return SessionRejected(
+            "LinkedIn redirected to the login page, so it did not accept the "
+            "session. The usual cause is an incomplete cookie: li_at on its own "
+            "is not enough. Copy the whole Cookie header from a real request "
+            "(DevTools > Network > any www.linkedin.com request > Request "
+            "Headers > cookie) and send it in X-LinkedIn-Cookie."
+        )
+
+    return SessionRejected(
+        f"LinkedIn redirected the request to {location or 'an unknown location'} "
+        "rather than answering it. The session was not accepted."
+    )
 
 
 def _short(url: str) -> str:
-    """A log-friendly label for a Voyager URL.
-
-    Full URLs are long, repetitive, and carry the query string -- which is
-    exactly where a secret would hide. The path plus the interesting query
-    parameter is what actually identifies a call.
-    """
+    """A short label for a Voyager URL. Full ones are long and hide secrets."""
     trimmed = url.replace(VOYAGER_BASE + "/", "")
     path, _, query = trimmed.partition("?")
     for marker in ("sectionType:", "vanityName:", "memberIdentity="):
@@ -65,12 +101,7 @@ def _short(url: str) -> str:
 
 
 class OutboundLimiter:
-    """Token bucket over outbound LinkedIn requests, refilling continuously.
-
-    This matters more than the inbound limit. Inbound limits protect the service
-    from callers; this one protects the LinkedIn account from the service, and the
-    account is the part that cannot be re-provisioned in thirty seconds.
-    """
+    """Token bucket over outbound requests. Protects the shared outbound IP."""
 
     def __init__(self, per_minute: int) -> None:
         self._capacity = max(1, per_minute)
@@ -94,8 +125,7 @@ class OutboundLimiter:
                 else:
                     wait = (1.0 - self._tokens) / self._refill_rate
             if wait <= 0.0:
-                # Small jitter even when we have budget: a burst of perfectly
-                # evenly spaced requests is itself a bot signature.
+                # Evenly spaced requests are themselves a bot signature.
                 await asyncio.sleep(random.uniform(0.05, 0.25))
                 return
             await asyncio.sleep(wait)
@@ -150,11 +180,22 @@ class CircuitBreaker:
 class VoyagerClient:
     """Authenticated access to Voyager, plus raw fetches for queryId discovery."""
 
-    def __init__(self, settings: Settings, sessions: SessionManager) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        sessions: SessionManager,
+        limiter: OutboundLimiter | None = None,
+        breaker: CircuitBreaker | None = None,
+    ) -> None:
+        """`limiter` and `breaker` are shared process-wide when supplied.
+
+        Load-bearing: each request builds its own client, so per-client guards
+        would reset every time and never guard anything.
+        """
         self._settings = settings
         self._sessions = sessions
-        self._limiter = OutboundLimiter(settings.outbound_max_per_minute)
-        self.breaker = CircuitBreaker()
+        self._limiter = limiter or OutboundLimiter(settings.outbound_max_per_minute)
+        self.breaker = breaker or CircuitBreaker()
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, connect=10.0),
             follow_redirects=False,
@@ -172,7 +213,7 @@ class VoyagerClient:
         """GET a Voyager endpoint and return the parsed JSON body."""
         url = f"{VOYAGER_BASE}/{path.lstrip('/')}"
         if params:
-            url = f"{url}?{urlencode(params, safe=RESTLI_SAFE_CHARS)}"
+            url = f"{url}?{_encode_params(params)}"
 
         response = await self._request(url)
 
@@ -189,12 +230,22 @@ class VoyagerClient:
         return body
 
     async def get_asset(self, url: str) -> str:
-        """GET a LinkedIn URL as text.
+        """GET a URL as text. Used for JS bundles only, never profile data."""
+        response = await self._request(
+            url,
+            accept="text/html,application/javascript,*/*",
+            # The CDN is a cache of public files; only linkedin.com itself counts.
+            paced=ASSET_HOST not in url,
+            # Pages redirect legitimately: LinkedIn 302s a profile page to
+            # itself to refresh routing cookies. Voyager endpoints never do.
+            follow_redirects=True,
+        )
 
-        Used only to read JS asset bundles and the HTML that lists them, never to
-        extract profile data. See queryids.py for why that distinction matters.
-        """
-        response = await self._request(url, accept="text/html,application/javascript,*/*")
+        # The login wall arrives as an ordinary 200; the final URL gives it away.
+        landed = str(response.url).lower()
+        if any(marker in landed for marker in ("/login", "/authwall", "/checkpoint")):
+            raise _redirect_rejection(str(response.url))
+
         return response.text
 
     # --- request machinery --------------------------------------------------
@@ -216,13 +267,21 @@ class VoyagerClient:
             "Referer": "https://www.linkedin.com/feed/",
         }
 
-    async def _request(self, url: str, *, accept: str | None = None) -> httpx.Response:
+    async def _request(
+        self,
+        url: str,
+        *,
+        accept: str | None = None,
+        paced: bool = True,
+        follow_redirects: bool = False,
+    ) -> httpx.Response:
         last_error: Exception | None = None
         session_retried = False
 
         for attempt in range(1, MAX_ATTEMPTS + 1):
             self.breaker.check()
-            await self._limiter.acquire()
+            if paced:
+                await self._limiter.acquire()
 
             # Resolved per attempt so a mid-retry session refresh is picked up.
             headers = await self._authenticated_headers()
@@ -231,7 +290,9 @@ class VoyagerClient:
 
             call_started = time.monotonic()
             try:
-                response = await self._client.get(url, headers=headers)
+                response = await self._client.get(
+                    url, headers=headers, follow_redirects=follow_redirects
+                )
             except httpx.HTTPError as exc:
                 last_error = exc
                 stage(logger, "  voyager", _short(url), result="TRANSPORT ERROR",
@@ -277,7 +338,7 @@ class VoyagerClient:
                     retry_after=self.breaker.retry_after,
                 )
 
-            # A dead cookie. Worth exactly one re-acquisition, not a retry loop.
+            # A dead cookie: worth one re-acquisition, not a loop.
             if status == 401:
                 if session_retried:
                     stage(logger, "  session", "still 401 after refresh - giving up",
@@ -292,8 +353,19 @@ class VoyagerClient:
                 session_retried = True
                 continue
 
+            # Voyager answers with JSON or not at all; a 3xx is the login flow.
+            if status in (301, 302, 303, 307, 308):
+                raise _redirect_rejection(response.headers.get("location", ""))
+
             if status == 404:
                 raise ProfileNotFound("LinkedIn has no profile at that identifier.")
+
+            # LinkedIn is retiring the legacy REST endpoints account by account.
+            if status == 410:
+                raise EndpointRetired(
+                    "LinkedIn has retired this endpoint for this account (410). "
+                    "The fetch chain will fall through to the next strategy."
+                )
 
             # A rejected query, almost always a queryId LinkedIn has rotated.
             # Surfaced distinctly so the caller can rediscover and retry once.
@@ -331,12 +403,7 @@ class VoyagerClient:
 
     @staticmethod
     async def _backoff(attempt: int, retry_after: str | None = None) -> None:
-        """Exponential backoff with full jitter.
-
-        Full jitter rather than fixed: several concurrent section fetches failing
-        together would otherwise retry in lockstep and reproduce the burst that
-        caused the throttle in the first place.
-        """
+        """Exponential backoff with full jitter, so concurrent retries spread out."""
         if retry_after:
             try:
                 await asyncio.sleep(min(float(retry_after), 30.0))

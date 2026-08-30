@@ -1,15 +1,9 @@
 """One live end-to-end fetch against the real Voyager API.
 
-Deliberately does ONE profile per run. The point of this script is to tell you
-whether the session works and what the data looks like, and that answer does not
-get better by making twenty requests to find it.
-
-    python scripts/live_test.py                       # a demo profile
     python scripts/live_test.py <linkedin-profile-url>
 
-Reads .env directly -- no server needed. Every failure is explained in terms of
-what to do about it, because the interesting failures here (challenge, 999,
-expired cookie) all need a human and none of them are code bugs.
+One profile per run, no server needed. Failures print what to do about them,
+since the interesting ones all need a human rather than a code change.
 """
 
 from __future__ import annotations
@@ -23,36 +17,30 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.config import get_settings  # noqa: E402
-from app.errors import (  # noqa: E402
-    ChallengeRequired,
-    LinkedInAPIError,
-    LinkedInBlocked,
-    SessionUnavailable,
-)
+from app.errors import LinkedInAPIError  # noqa: E402
 from app.linkedin.auth import SessionManager  # noqa: E402
 from app.linkedin.client import VoyagerClient  # noqa: E402
 from app.linkedin.fetch import ProfileFetcher  # noqa: E402
 from app.linkedin.queryids import QueryIdRegistry  # noqa: E402
 from app.linkedin.urls import extract_public_identifier  # noqa: E402
+from app.logging_config import configure_logging  # noqa: E402
 
 RULE = "-" * 72
 
 REMEDIES = {
-    "linkedin_challenge_required": (
-        "LinkedIn challenged the login. This is the expected outcome of the\n"
-        "  email/password path more often than not, and the code is behaving\n"
-        "  correctly by stopping. Use the cookie path instead: log in from a\n"
-        "  browser, complete the challenge there, then copy li_at into .env."
-    ),
-    "linkedin_credentials_rejected": (
-        "LinkedIn rejected that email/password pair. Check them, but do NOT keep\n"
-        "  retrying -- repeated failed logins are themselves a risk signal, and\n"
-        "  LinkedIn declines programmatic login for many accounts regardless of\n"
-        "  whether the password is right. The cookie path is the reliable one."
+    "linkedin_session_rejected": (
+        "LinkedIn bounced the request to its login page, so it did not accept\n"
+        "  the session. Copy the whole Cookie header again from a live request\n"
+        "  (DevTools > Network > any www.linkedin.com request > Request Headers\n"
+        "  > cookie) -- a partial one is the usual cause."
     ),
     "linkedin_session_unavailable": (
-        "No usable session. Either LINKEDIN_LI_AT is empty in .env, or the\n"
-        "  cookie has expired. Copy a fresh one from the browser."
+        "No usable session. LINKEDIN_COOKIE is empty in .env, or the cookie has\n"
+        "  expired. Copy a fresh header from the browser."
+    ),
+    "endpoint_retired": (
+        "LinkedIn has withdrawn that endpoint for this account. Expected, and\n"
+        "  handled -- the chain falls through to the next strategy."
     ),
     "linkedin_blocked": (
         "LinkedIn refused this host (999 or 403). Your IP is flagged, or the\n"
@@ -139,19 +127,19 @@ def _fmt(date) -> str:
 
 async def main() -> int:
     settings = get_settings()
+    configure_logging(settings.log_level, settings.log_colour)
 
     target = sys.argv[1] if len(sys.argv) > 1 else settings.demo_profiles[0]
     slug = extract_public_identifier(target)
 
-    if settings.has_cookie_session:
-        path = "cookie (LINKEDIN_LI_AT)"
-    elif settings.has_login_credentials:
-        path = "programmatic login (LINKEDIN_EMAIL / LINKEDIN_PASSWORD)"
-    else:
-        print("No LinkedIn credentials in .env. Fill in LINKEDIN_LI_AT and re-run.")
+    if not settings.has_session:
+        print(
+            "No LinkedIn session in .env. Set LINKEDIN_COOKIE to the whole Cookie "
+            "header from a logged-in browser request, then re-run."
+        )
         return 2
 
-    print(f"\n  auth path           {path}")
+    print("\n  auth path           LINKEDIN_COOKIE")
     print(f"  target              {slug}")
     print(f"  outbound cap        {settings.outbound_max_per_minute}/min")
     print(f"  proxy               {'yes' if settings.outbound_proxy_url else 'no'}")
@@ -159,13 +147,13 @@ async def main() -> int:
 
     sessions = SessionManager(settings)
     client = VoyagerClient(settings, sessions)
-    registry = QueryIdRegistry(settings, client)
+    registry = QueryIdRegistry(settings)
     fetcher = ProfileFetcher(client, registry)
 
     started = time.perf_counter()
     try:
         result = await fetcher.fetch(slug)
-    except (ChallengeRequired, SessionUnavailable, LinkedInBlocked, LinkedInAPIError) as exc:
+    except LinkedInAPIError as exc:
         elapsed = time.perf_counter() - started
         print(RULE)
         print(f"  FAILED after {elapsed:.1f}s")

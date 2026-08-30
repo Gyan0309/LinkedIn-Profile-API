@@ -1,22 +1,11 @@
-"""Discover LinkedIn's GraphQL queryId hashes at runtime.
+"""Discover GraphQL queryId hashes at runtime.
 
-Voyager's GraphQL endpoint does not accept arbitrary queries. It accepts a
-`queryId` naming a query LinkedIn has pre-registered server-side, in the form
-`voyagerIdentityDashProfileComponents.<32 hex chars>`. The hash changes whenever
-LinkedIn ships the corresponding front-end module, which is often.
+Voyager only accepts pre-registered queries, named by a hash that changes when
+LinkedIn ships. Rather than hardcode one, the ids are read out of LinkedIn's own
+JS bundles. Only bundle URLs come from HTML; profile data never does.
 
-That makes a hardcoded queryId a time bomb: the service works the day it is
-written and returns 400s a few weeks later, with nothing in the logs explaining
-why. So we read the ids the same place the LinkedIn web app does -- out of its
-own JavaScript bundles -- and refresh them when one stops working.
-
-Scope note, because it is easy to misread: discovery fetches HTML only to list
-the `<script src>` bundle URLs, and then fetches those `.js` files. No profile
-data is ever parsed out of HTML. Profile data comes exclusively from Voyager
-endpoints. This is `httpx.get` on a JavaScript file, not browser automation and
-not page scraping.
-
-Resolution order: an env pin beats the cache, the cache beats a network fetch.
+Largely vestigial: linkedin.com no longer calls the section query this served,
+so the dash collections in fetch.py do the real work.
 """
 
 from __future__ import annotations
@@ -36,15 +25,25 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Seeded from a page the web app renders for any logged-in member. The feed
-# loads the same shared query registry the profile view uses.
-BUNDLE_SOURCE_URL = "https://www.linkedin.com/feed/"
+# Seeded from a profile page, not the feed: LinkedIn code-splits per route, so
+# feed bundles hold no profile queries.
+FALLBACK_SOURCE_URL = "https://www.linkedin.com/feed/"
+
+
+def profile_page_url(public_identifier: str) -> str:
+    return f"https://www.linkedin.com/in/{public_identifier}/"
+
 
 # LinkedIn serves its bundles from static.licdn.com under a content hash.
 _BUNDLE_URL_RE = re.compile(r"https://static\.licdn\.com/[^\"'\s>]+?\.js")
 
-# The registry entries themselves, as they appear inline in the bundle source.
-_QUERY_ID_RE = re.compile(r"\b(voyager[A-Za-z0-9]+)\.([0-9a-f]{32})\b")
+# The hash length is not contractual, so it is matched as a range.
+_QUERY_ID_RE = re.compile(r"\b(voyager[A-Za-z0-9]+)\.([0-9a-f]{16,64})\b")
+
+# The same registration written as an explicit property, which some bundles use.
+_QUERY_ID_ASSIGN_RE = re.compile(
+    r"""queryId\s*[:=]\s*['"](voyager[A-Za-z0-9]+)\.([0-9a-f]{16,64})['"]"""
+)
 
 # Queries this service needs. Names are stable even though the hashes are not.
 QUERY_PROFILE_BY_VANITY = "voyagerIdentityDashProfiles"
@@ -65,11 +64,14 @@ BUNDLE_CONCURRENCY = 4
 
 
 class QueryIdRegistry:
-    """Holds the current queryId map and knows how to rediscover it."""
+    """Holds the current queryId map and knows how to rediscover it.
 
-    def __init__(self, settings: Settings, client: VoyagerClient) -> None:
+    Owns no client: queryIds describe LinkedIn, not the caller, so one registry
+    is shared and borrows a client for a discovery pass.
+    """
+
+    def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._client = client
         self._discovered: dict[str, str] = {}
         self._discovered_at: float = 0.0
         self._generation = 0
@@ -82,13 +84,7 @@ class QueryIdRegistry:
 
     @property
     def generation(self) -> int:
-        """Bumped on every invalidation.
-
-        A caller captures this before a request and hands it back if that request
-        is rejected. That is what lets twelve concurrent section fetches, all
-        rejected by the same stale id, trigger exactly one rediscovery between
-        them instead of twelve.
-        """
+        """Bumped on every invalidation, so concurrent rejections rotate once."""
         return self._generation
 
     def is_pinned(self, name: str) -> bool:
@@ -100,13 +96,10 @@ class QueryIdRegistry:
         )
 
     def invalidate(self, seen_generation: int | None = None) -> bool:
-        """Force the next lookup to rediscover. Returns whether this call did it.
+        """Force rediscovery. Returns whether this call actually did it.
 
-        Two guards, because they catch different shapes of the same problem.
-        The generation check ignores a stale report from a request that failed
-        before someone else already rotated. The cooldown bounds the rest: section
-        fetches run in waves, so each wave sees a legitimately fresh generation
-        and would otherwise rotate again.
+        The generation check ignores a stale report; the cooldown stops section
+        fetch waves each rotating again.
         """
         if seen_generation is not None and seen_generation != self._generation:
             return False
@@ -126,7 +119,12 @@ class QueryIdRegistry:
         self._generation += 1
         return True
 
-    async def get(self, name: str) -> str:
+    async def get(
+        self,
+        name: str,
+        client: VoyagerClient,
+        seed_url: str | None = None,
+    ) -> str:
         """Return the queryId for a query name, discovering it if necessary."""
         pinned = self.pinned.get(name)
         if pinned:
@@ -135,7 +133,7 @@ class QueryIdRegistry:
         if self._cache_is_fresh() and name in self._discovered:
             return self._discovered[name]
 
-        await self._discover()
+        await self._discover(client, seed_url)
 
         value = self._discovered.get(name)
         if not value:
@@ -158,13 +156,16 @@ class QueryIdRegistry:
 
     # --- discovery ----------------------------------------------------------
 
-    async def _discover(self) -> None:
+    async def _discover(
+        self, client: VoyagerClient, seed_url: str | None = None
+    ) -> None:
         async with self._lock:
             # Another coroutine may have refreshed while we waited on the lock.
             if self._cache_is_fresh():
                 return
 
-            html = await self._client.get_asset(BUNDLE_SOURCE_URL)
+            source_url = seed_url or FALLBACK_SOURCE_URL
+            html = await client.get_asset(source_url)
             bundle_urls = self._bundle_urls(html)
             if not bundle_urls:
                 raise QueryIdDiscoveryFailed(
@@ -173,13 +174,16 @@ class QueryIdRegistry:
                 )
 
             stage(logger, "queryid", "scanning LinkedIn JS bundles",
-                  bundles=len(bundle_urls))
-            found = await self._scan_bundles(bundle_urls)
+                  bundles=len(bundle_urls), seed=source_url)
+            found = await self._scan_bundles(client, bundle_urls)
 
             if not found:
                 raise QueryIdDiscoveryFailed(
-                    f"Scanned {len(bundle_urls)} bundles and found no queryId "
-                    f"registrations."
+                    f"Scanned {len(bundle_urls)} bundles from {source_url} and "
+                    f"found no queryId registrations. Run "
+                    f"`python scripts/probe_queryids.py <profile>` to see what is "
+                    f"actually in the bundles, or pin known-good ids via "
+                    f"LINKEDIN_QUERY_IDS_JSON."
                 )
 
             self._discovered = found
@@ -189,12 +193,7 @@ class QueryIdRegistry:
 
     @staticmethod
     def _bundle_urls(html: str) -> list[str]:
-        """Bundle URLs from the page, most-likely-relevant first.
-
-        Bundles whose filenames mention profile or identity are scanned before the
-        rest, so the common case finds what it needs in the first few fetches
-        instead of pulling forty files.
-        """
+        """Bundle URLs, profile-related ones first so the scan can exit early."""
         seen: dict[str, None] = {}
         for match in _BUNDLE_URL_RE.finditer(html):
             seen.setdefault(match.group(0), None)
@@ -203,7 +202,9 @@ class QueryIdRegistry:
         urls.sort(key=lambda u: 0 if ("profile" in u or "identity" in u) else 1)
         return urls[:MAX_BUNDLES_SCANNED]
 
-    async def _scan_bundles(self, urls: list[str]) -> dict[str, str]:
+    async def _scan_bundles(
+        self, client: VoyagerClient, urls: list[str]
+    ) -> dict[str, str]:
         found: dict[str, str] = {}
         semaphore = asyncio.Semaphore(BUNDLE_CONCURRENCY)
 
@@ -212,18 +213,16 @@ class QueryIdRegistry:
                 return  # Everything we need is already in hand.
             async with semaphore:
                 try:
-                    source = await self._client.get_asset(url)
+                    source = await client.get_asset(url)
                 except Exception as exc:  # noqa: BLE001 - one bad bundle is not fatal
                     logger.debug("bundle fetch failed for %s: %s", url, exc)
                     return
-            for name, query_id in _QUERY_ID_RE.findall(source):
-                # First writer wins: bundles are scanned relevance-ordered, so an
-                # id from a profile bundle should not be overwritten by a
-                # coincidental match in an unrelated one.
+            matches = _QUERY_ID_RE.findall(source) + _QUERY_ID_ASSIGN_RE.findall(source)
+            for name, query_id in matches:
+                # First writer wins; bundles are scanned relevance-ordered.
                 found.setdefault(name, query_id)
 
-        # Scanned in relevance-ordered chunks so the early-exit check above can
-        # actually short-circuit rather than every task launching at once.
+        # Chunked so the early exit above can actually short-circuit.
         for start in range(0, len(urls), BUNDLE_CONCURRENCY):
             chunk = urls[start : start + BUNDLE_CONCURRENCY]
             await asyncio.gather(*(scan(url) for url in chunk))

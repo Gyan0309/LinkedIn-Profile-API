@@ -1,23 +1,11 @@
 """Extract profile sections from Voyager's GraphQL profile-card responses.
 
-The GraphQL path returns *rendered component trees*, not typed entities. A
-position is not `{title, companyName, startDate}`; it is an `entityComponent`
-carrying the strings the web UI paints -- a title, a subtitle packing several
-fields around a middle dot, and a caption holding a human-readable date range.
+These are rendered component trees, not typed entities: a position arrives as a
+title, a subtitle packing several fields around a middle dot, and a caption like
+"Jan 2020 - Present - 3 yrs". Recovering structured data from that is lossy,
+which is why the dash and REST paths are preferred where available.
 
-That is worth being explicit about, because it sets the accuracy ceiling for this
-path. Structured dates have to be recovered from "Jan 2020 - Present - 3 yrs",
-and a company name has to be separated from an employment type inside one string.
-`common.parse_date_range` is deliberately conservative about it.
-
-The legacy REST path in `profileview.py` carries real typed fields and is more
-faithful where it is available. The fetch chain prefers whichever it can get, and
-`meta.source` tells the caller which one they received.
-
-Everything here is defensive by construction. LinkedIn changes component shapes
-without notice, so a shape we do not recognise yields no row rather than a
-partial row -- and the section is then reported in `sections_unavailable`
-instead of being silently returned as empty.
+An unrecognised shape yields no row rather than a partial one.
 """
 
 from __future__ import annotations
@@ -87,11 +75,10 @@ def rows_from_card(payload: dict[str, Any]) -> list[EntityRow]:
 
 
 def _top_level_entity_components(node: Any, depth: int = 0) -> list[dict[str, Any]]:
-    """Find the outermost entityComponents, without descending into their children.
+    """The outermost entityComponents only.
 
-    Stopping at the first level matters: a position's sub-roles are themselves
-    entityComponents, and collecting them all flat would turn one job with three
-    promotions into four unrelated jobs.
+    Sub-roles are entityComponents too, so descending would turn one job with
+    three promotions into four unrelated jobs.
     """
     if depth > MAX_TREE_DEPTH or node is None:
         return []
@@ -184,13 +171,7 @@ def _absorb_subcomponents(node: Any, row: EntityRow, *, depth: int) -> None:
 
 
 def to_experience(rows: list[EntityRow]) -> list[Position]:
-    """Map rows to positions, preserving multi-role stints at one employer.
-
-    LinkedIn renders several roles at the same company as one card with the
-    company in the title and the roles as children. Flattening that would lose
-    the fact that it was one continuous tenure with promotions, so the grouping is
-    kept and the parent carries the company while `sub_positions` carry the roles.
-    """
+    """Map rows to positions, keeping multi-role stints at one employer grouped."""
     positions: list[Position] = []
 
     for row in rows:

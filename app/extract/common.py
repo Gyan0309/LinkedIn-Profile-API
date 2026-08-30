@@ -1,14 +1,8 @@
-"""Shared helpers for turning Voyager fragments into schema objects.
+"""Shared helpers: image reconstruction, and date parsing.
 
-Two things live here because both extraction families need them: image
-reconstruction, and the date parsing that the GraphQL path cannot avoid.
-
-On dates: the legacy REST shape carries real numeric date fields. The GraphQL
-profile cards do not -- they carry the rendered caption string the web UI shows,
-like "Jan 2020 - Present - 3 yrs 2 mos". Parsing that back into structured dates
-is genuinely lossy and locale-dependent, so `parse_date_range` is conservative:
-it returns what it is confident about and leaves the rest None rather than
-guessing. A wrong date is worse than a missing one.
+The REST shapes carry numeric dates; the GraphQL cards carry rendered strings
+like "Jan 2020 - Present - 3 yrs". Parsing those back is lossy, so the parser
+returns None rather than guessing -- a wrong date is worse than a missing one.
 """
 
 from __future__ import annotations
@@ -23,8 +17,7 @@ MONTHS = {
     "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
 }
 
-# "Present", and the equivalents LinkedIn renders for other locales we may see
-# even with x-li-lang set, because profile content itself can be multi-locale.
+# Profile content can be multi-locale even with x-li-lang set.
 PRESENT_TOKENS = {"present", "current", "now", "heute", "actuel", "actualidad"}
 
 _YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
@@ -45,12 +38,7 @@ def clean_text(value: Any) -> str | None:
 
 
 def text_of(node: Any) -> str | None:
-    """Pull the display string out of a Voyager text node.
-
-    Voyager wraps text several ways depending on the component: a bare string, a
-    `{"text": "..."}` object, or a `{"text": {"text": "..."}}` object with
-    attribute runs alongside. All three appear in the same payload.
-    """
+    """The display string from a Voyager text node -- three shapes, same payload."""
     if isinstance(node, str):
         return clean_text(node)
     if not isinstance(node, dict):
@@ -70,13 +58,9 @@ def text_of(node: Any) -> str | None:
 
 
 def image_from_vector(node: Any) -> Image | None:
-    """Rebuild real image URLs from a Voyager vectorImage.
+    """Rebuild image URLs from a vectorImage: `rootUrl` plus width-tagged paths.
 
-    LinkedIn stores an image as a `rootUrl` plus a list of width-tagged path
-    segments, so the caller is expected to concatenate them. Every available size
-    is returned rather than one we picked -- a consumer building avatars wants the
-    small one, a consumer building a profile page wants the large one, and this
-    API has no basis for choosing.
+    Every size is returned; the caller knows which one it wants.
     """
     vector = _find_vector_image(node)
     if not vector:
@@ -109,12 +93,7 @@ def image_from_vector(node: Any) -> Image | None:
 
 
 def _find_vector_image(node: Any, depth: int = 0) -> dict[str, Any] | None:
-    """Locate a vectorImage anywhere in a nested image wrapper.
-
-    The nesting differs per component -- profile pictures, company logos and
-    school logos each bury it at a different depth -- and chasing every variant
-    with explicit key paths would be a long list that breaks on the next one.
-    """
+    """Find a vectorImage at any depth; the nesting differs per component."""
     if depth > 8 or node is None:
         return None
 
@@ -153,18 +132,12 @@ def date_from_voyager(node: Any) -> DatePart | None:
 def parse_date_range(caption: str | None) -> tuple[DatePart | None, DatePart | None, bool]:
     """Parse a rendered caption into (start, end, is_current).
 
-    Handles the forms LinkedIn actually renders:
-        "Jan 2020 - Present - 3 yrs 2 mos"
-        "Jan 2020 - Mar 2022"
-        "2018 - 2022"
-        "2019"
-
     Returns None for a side it cannot read rather than inventing a value.
     """
     if not caption:
         return None, None, False
 
-    # Strip the trailing duration so its numbers cannot be mistaken for years.
+    # Strip the duration so its numbers are not read as years.
     working = re.split(r"\s+[-·–]\s+(?=\d+\s*(?:yrs?|mos?|years?|months?))",
                        caption, maxsplit=1)[0]
 
@@ -194,6 +167,22 @@ def _parse_single_date(text: str) -> DatePart | None:
     return None
 
 
+def months_between(start: DatePart | None, end: DatePart | None) -> int | None:
+    """Whole months from `start` to `end`, or to now. January when no month."""
+    if start is None or start.year is None:
+        return None
+
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
+    end_year = end.year if end and end.year else now.year
+    end_month = (end.month if end and end.month else (1 if end else now.month))
+
+    months = (end_year - start.year) * 12 + (end_month - (start.month or 1))
+    # A single-month role is one month, not zero.
+    return max(1, months + 1) if months >= 0 else None
+
+
 def parse_duration_months(caption: str | None) -> int | None:
     """Read "3 yrs 2 mos" out of a caption, if it carries one."""
     if not caption:
@@ -214,11 +203,7 @@ def parse_duration_months(caption: str | None) -> int | None:
 
 
 def split_on_dot(value: str | None) -> list[str]:
-    """Split a Voyager subtitle on its middle-dot separator.
-
-    Subtitles pack several fields into one string -- "Acme Corp - Full-time",
-    "Bachelor's degree, Computer Science" -- using a middle dot as the delimiter.
-    """
+    """Split a subtitle on its middle dot: "Acme Corp · Full-time"."""
     if not value:
         return []
     parts = re.split(r"\s*[·•]\s*", value)
@@ -243,7 +228,7 @@ def _as_int(value: Any) -> int | None:
 
 
 def parse_count(value: Any) -> tuple[int | None, bool]:
-    """Read a follower or connection count, flagging LinkedIn's 500+ cap."""
+    """Read a count, flagging LinkedIn's 500+ cap."""
     if isinstance(value, int) and not isinstance(value, bool):
         return value, value >= 500
     text = clean_text(value)

@@ -11,13 +11,20 @@ import logging
 from fastapi.testclient import TestClient
 
 from app.logging_config import (
+    ColourFormatter,
     RedactingFilter,
     RequestIdFilter,
+    _should_colour,
     new_request_id,
     request_id_var,
     stage,
 )
 from app.main import app
+
+GREEN = "[32m"
+YELLOW = "[33m"
+RED = "[31m"
+RESET = "[0m"
 
 
 def render(message: str, *args: object) -> str:
@@ -157,3 +164,50 @@ def test_error_responses_also_carry_the_request_id() -> None:
 
     assert response.status_code == 400
     assert "X-Request-ID" in response.headers
+
+
+# --- colour -----------------------------------------------------------------
+
+
+def colourise(message: str, level: int = logging.INFO) -> str:
+    formatter = ColourFormatter(
+        "%(asctime)s %(levelname)-5s [%(request_id)s] %(message)s", datefmt="%H:%M:%S"
+    )
+    record = logging.LogRecord(
+        name="t", level=level, pathname=__file__, lineno=1,
+        msg=message, args=(), exc_info=None,
+    )
+    record.request_id = "abc123"
+    return formatter.format(record)
+
+
+def test_successful_upstream_calls_are_green() -> None:
+    assert GREEN in colourise("  voyager        graphql[x] status=200 ms=88")
+
+
+def test_failed_upstream_calls_are_not_green() -> None:
+    line = colourise("  voyager        graphql[x] status=400 ms=88", logging.WARNING)
+    assert GREEN not in line
+    assert YELLOW in line
+
+
+def test_chain_completion_is_green_but_chain_start_is_not() -> None:
+    """Colouring the announcement of work like its completion makes it meaningless."""
+    assert GREEN in colourise("chain            done source=mixed served=12")
+    assert GREEN not in colourise("chain            starting identifier=someone")
+
+
+def test_errors_are_red() -> None:
+    assert RED in colourise("FAILED           everything", logging.ERROR)
+
+
+def test_uncoloured_lines_carry_no_stray_reset() -> None:
+    line = colourise("resolved         identifier=someone")
+    assert line.count(RESET) == 1  # only the one closing the grey timestamp
+
+
+def test_colour_is_off_when_output_is_redirected(monkeypatch) -> None:
+    """A log collector must never receive escape sequences as literal text."""
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False, raising=False)
+    assert _should_colour("auto") is False
+    assert _should_colour("never") is False

@@ -1,23 +1,7 @@
-"""Logging setup: request correlation, stage tracing, and secret redaction.
+"""Logging: request correlation, stage tracing, secret redaction.
 
-Three jobs.
-
-**Correlation.** Every log line carries a short request id, so when two callers
-overlap you can still read one request's story end to end. The id lives in a
-ContextVar rather than being threaded through every function signature, because
-the interesting logs come from four layers down (the HTTP client) and plumbing an
-id through the fetch chain to reach them would be noise in every signature.
-
-**Tracing.** `stage()` emits a consistent, greppable line per step. A failed
-request should be diagnosable from the log alone, without adding prints and
-re-running -- by the time you are re-running against LinkedIn you are spending
-the account's request budget to learn something the log should have told you the
-first time.
-
-**Redaction.** A service holding a session cookie will eventually log one by
-accident -- in an exception repr, a retry warning, a header dump. The filter
-rewrites formatted records, matching on value *shape* as well as key name, so a
-bare `ajax:` session id is caught wherever it appears.
+The redaction filter matches on value shape as well as key name, so a bare
+`ajax:` session id is caught wherever it appears.
 """
 
 from __future__ import annotations
@@ -28,7 +12,7 @@ import sys
 import uuid
 from contextvars import ContextVar
 
-# "-" outside a request: startup, shutdown, and the live_test script.
+# "-" outside a request: startup, shutdown, scripts.
 request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 
 _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -63,7 +47,7 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
 
 
 def new_request_id() -> str:
-    """A short id. Six hex characters is plenty to disambiguate concurrent calls."""
+    """Six hex characters, enough to tell concurrent requests apart."""
     return uuid.uuid4().hex[:6]
 
 
@@ -97,8 +81,7 @@ class RedactingFilter(logging.Filter):
             redacted = pattern.sub(replacement, redacted)
 
         if redacted != message:
-            # Collapse args into the already-formatted message; re-formatting
-            # would reintroduce the unredacted values.
+            # Collapse args in; re-formatting would restore the raw values.
             record.msg = redacted
             record.args = ()
         return True
@@ -112,11 +95,7 @@ def stage(
     level: int = logging.INFO,
     **fields: object,
 ) -> None:
-    """Emit one trace line: a step name, a message, then `key=value` pairs.
-
-    Uniform shape on purpose -- `grep 'S1'` or `grep 'cache'` should pull a
-    coherent slice out of a busy log without needing a parser.
-    """
+    """One trace line: step name, message, then `key=value` pairs."""
     parts = [f"{step:<16}"]
     if message:
         parts.append(message)
@@ -125,14 +104,83 @@ def stage(
     logger.log(level, " ".join(parts))
 
 
-def configure_logging(level: str = "INFO") -> None:
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s %(levelname)-5s [%(request_id)s] %(message)s",
-            datefmt="%H:%M:%S",
-        )
+class _Ansi:
+    RESET = "\033[0m"
+    DIM = "\033[2m"
+    BOLD = "\033[1m"
+    RED = "\033[31m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    BLUE = "\033[34m"
+    CYAN = "\033[36m"
+    GREY = "\033[90m"
+
+
+def _enable_windows_ansi() -> bool:
+    """Turn on virtual-terminal processing so ANSI codes render on Windows."""
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        # ENABLE_PROCESSED_OUTPUT | ENABLE_WRAP_AT_EOL_OUTPUT
+        # | ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        return bool(kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7))
+    except Exception:  # noqa: BLE001 - colour is a nicety, never a failure
+        return False
+
+
+def _should_colour(mode: str) -> bool:
+    if mode == "never":
+        return False
+    if mode == "always":
+        _enable_windows_ansi()
+        return True
+    # auto: colour a terminal, never a redirected file or a log collector, which
+    # would otherwise receive escape sequences as literal garbage.
+    if not sys.stdout.isatty():
+        return False
+    return _enable_windows_ansi()
+
+
+def _is_success(rendered: str) -> bool:
+    """Whether a line reports an outcome. `chain starting` is not one."""
+    return (
+        "status=2" in rendered
+        or rendered.startswith("served")
+        or " done source=" in rendered
     )
+
+
+class ColourFormatter(logging.Formatter):
+    """Tints by meaning, not just level -- a successful call is also INFO."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        message = super().format(record)
+        rendered = record.getMessage()
+
+        if record.levelno >= logging.ERROR:
+            body = _Ansi.RED + _Ansi.BOLD
+        elif record.levelno >= logging.WARNING:
+            body = _Ansi.YELLOW
+        elif _is_success(rendered):
+            body = _Ansi.GREEN
+        elif rendered.startswith(("-> request", "<- request")):
+            body = _Ansi.CYAN
+        else:
+            body = ""
+
+        timestamp, _, rest = message.partition(" ")
+        tinted = f"{body}{rest}{_Ansi.RESET}" if body else rest
+        return f"{_Ansi.GREY}{timestamp}{_Ansi.RESET} {tinted}"
+
+
+def configure_logging(level: str = "INFO", colour: str = "auto") -> None:
+    handler = logging.StreamHandler(sys.stdout)
+    fmt = "%(asctime)s %(levelname)-5s [%(request_id)s] %(message)s"
+    formatter_cls = ColourFormatter if _should_colour(colour) else logging.Formatter
+    handler.setFormatter(formatter_cls(fmt, datefmt="%H:%M:%S"))
     # Order matters: the id is attached before redaction rewrites the message.
     handler.addFilter(RequestIdFilter())
     handler.addFilter(RedactingFilter())
@@ -142,10 +190,8 @@ def configure_logging(level: str = "INFO") -> None:
     root.addHandler(handler)
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
 
-    # httpx logs the full request URL at INFO. We log our own, better-shaped line
-    # for every upstream call, so this would only duplicate it -- and a query
-    # string is exactly where a secret would hide.
+    # httpx logs full URLs at INFO -- duplicated, and where secrets hide.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-    # uvicorn's access log carries no request id and duplicates our own lines.
+    # uvicorn's access log has no request id and duplicates ours.
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)

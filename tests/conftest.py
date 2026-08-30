@@ -1,10 +1,5 @@
-"""Shared test fixtures.
-
-Nothing in this suite touches the network or needs a LinkedIn account. The
-environment is scrubbed of every credential variable before settings are built,
-so a developer with a populated `.env` gets the same run as CI does with none --
-a test that passes only on the machine that has the cookie is not a test.
-"""
+"""Shared fixtures. The environment is scrubbed of credentials first, so a
+populated `.env` cannot change the result."""
 
 from __future__ import annotations
 
@@ -18,14 +13,17 @@ from app.config import Settings
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
 CREDENTIAL_VARS = (
+    "OUTBOUND_PROXY_URL",
+    "LINKEDIN_QUERY_IDS_JSON",
+    # Retired variables. Still scrubbed, because a developer with an old .env or
+    # an exported shell variable must get the same run as CI does with none.
+    "LINKEDIN_COOKIE",
     "LINKEDIN_LI_AT",
     "LINKEDIN_JSESSIONID",
     "LINKEDIN_EMAIL",
     "LINKEDIN_PASSWORD",
     "API_KEYS",
     "DEMO_PROFILES",
-    "OUTBOUND_PROXY_URL",
-    "LINKEDIN_QUERY_IDS_JSON",
 )
 
 
@@ -48,14 +46,10 @@ def fixture():
 
 @pytest.fixture
 def settings() -> Settings:
-    """Settings with no credentials and a predictable demo allowlist."""
+    """Settings with a low rate limit and no pacing, so tests run fast."""
     return Settings(
         _env_file=None,
-        linkedin_li_at="",
-        api_keys=["test-key-alpha"],
-        demo_profiles=["demo-person"],
         cache_ttl_seconds=60,
-        demo_rate_limit_per_hour=3,
-        keyed_rate_limit_per_hour=10,
+        rate_limit_per_hour=3,
         outbound_max_per_minute=600,
     )

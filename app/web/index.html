@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LinkedIn Profile API</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --paper:  #fdfdfd;
+    --sunk:   #f5f6f8;
+    --ink:    #15171b;
+    --ink-2:  #565b64;
+    --ink-3:  #898f99;
+    --rule:   #e4e6ea;
+    --rule-2: #c9ccd3;
+    --accent: #2a4a7f;
+    --ok:     #1b6b4a;
+    --warn:   #8a4a12;
+    --err:    #9b2c2c;
+    --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper:  #101215;
+      --sunk:   #171a1f;
+      --ink:    #e6e8ec;
+      --ink-2:  #9aa0aa;
+      --ink-3:  #6e747e;
+      --rule:   #252932;
+      --rule-2: #39404b;
+      --accent: #8fb0e0;
+      --ok:     #5fbf95;
+      --warn:   #d29254;
+      --err:    #e08a8a;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font-family: var(--sans); font-size: 16px; line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .col { max-width: 1120px; margin: 0 auto; padding: 0 40px; }
+  .page { padding: 52px 0 64px; }
+  code, .mono { font-family: var(--mono); }
+  a { color: var(--accent); }
+  a:hover { color: var(--ink); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ---------- masthead ---------- */
+  .top { display: flex; align-items: baseline; gap: .6rem; }
+  h1 {
+    font-size: 25px; font-weight: 600; letter-spacing: -.014em;
+    margin: 0; line-height: 1.2;
+  }
+  .ver {
+    font-family: var(--mono); font-size: 12px; font-weight: 500;
+    color: var(--ink-3); letter-spacing: .04em;
+  }
+  .lede { font-size: 16.5px; color: var(--ink-2); margin: .3rem 0 0; max-width: 46ch; }
+  .masthead { padding-bottom: 26px; }
+
+  /* ---------- form ---------- */
+  .form {
+    display: grid; grid-template-columns: 1.1fr 1fr;
+    border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
+  }
+  .field { padding: 28px 0; }
+  .form > .field:first-child { padding-right: 52px; }
+  .form > .field + .field { border-left: 1px solid var(--rule); padding-left: 52px; }
+  .field > label {
+    display: block; font-size: 15.5px; font-weight: 600; margin: 0 0 .25rem;
+  }
+  .fhelp { font-size: 14.5px; color: var(--ink-3); margin: 0 0 .9rem; max-width: 56ch; }
+  .fhelp code, .hint code { font-size: .93em; color: var(--ink-2); }
+
+  .in {
+    width: 100%; display: block; background: transparent; color: var(--ink);
+    font-family: var(--mono); font-size: 13.5px; line-height: 1.7;
+    border: 0; border-bottom: 1px solid var(--rule-2); border-radius: 0;
+    padding: .4rem 0 .5rem; resize: vertical;
+  }
+  .in::placeholder { color: var(--ink-3); }
+  .in:focus {
+    outline: 0; border-bottom-color: var(--ink); box-shadow: 0 1px 0 var(--ink);
+  }
+  textarea.in { min-height: 68px; }
+  .in:disabled {
+    border-bottom-style: dashed; border-bottom-color: var(--rule); cursor: not-allowed;
+  }
+  .in:disabled::placeholder { color: var(--rule-2); }
+
+  .hint { font-family: var(--mono); font-size: 13px; color: var(--ink-3); margin: .5rem 0 0; }
+  .hint.ok  { color: var(--ok); }
+  .hint.bad { color: var(--warn); }
+
+  details.help { margin-top: .9rem; }
+  details.help > summary {
+    display: inline-flex; align-items: center; gap: .4rem; cursor: pointer;
+    font-size: 14px; color: var(--accent); list-style: none; width: fit-content;
+  }
+  details.help > summary::-webkit-details-marker { display: none; }
+  .chev { flex: none; transition: transform .15s ease; }
+  details[open] > summary .chev { transform: rotate(90deg); }
+  details.help ol { margin: .9rem 0 0; padding-left: 1.15rem; font-size: 15px; color: var(--ink-2); }
+  details.help li { margin-bottom: .35rem; }
+  details.help p { font-size: 14px; color: var(--ink-3); margin: .8rem 0 0; max-width: 60ch; }
+  kbd {
+    font-family: var(--mono); font-size: .88em; color: var(--ink-2);
+    border-bottom: 1px solid var(--rule-2); padding-bottom: 1px;
+  }
+
+  .egs { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: .75rem; }
+  .egs button {
+    font-family: var(--mono); font-size: 13px; color: var(--ink-3);
+    background: transparent; border: 0; border-bottom: 1px solid var(--rule);
+    padding: 0 0 1px; cursor: pointer;
+  }
+  .egs button:hover { color: var(--ink); border-bottom-color: var(--ink); }
+
+  .actions { display: flex; align-items: center; gap: 1.1rem; margin-top: 1.5rem; }
+  .btn {
+    font-family: var(--sans); font-size: 14.5px; font-weight: 500;
+    background: var(--ink); color: var(--paper); border: 1px solid var(--ink);
+    border-radius: 3px; padding: .52rem 1.05rem; cursor: pointer; letter-spacing: .005em;
+  }
+  .btn:hover:not(:disabled) { background: var(--ink-2); border-color: var(--ink-2); }
+  .btn:disabled {
+    background: transparent; color: var(--ink-3); border-color: var(--rule);
+    cursor: not-allowed;
+  }
+  .btn.text {
+    background: transparent; border-color: transparent; color: var(--ink-2);
+    padding: .52rem 0;
+  }
+  .btn.text:hover { background: transparent; color: var(--ink); }
+
+  /* ---------- identity ---------- */
+  #out:not(:empty) { padding-top: 38px; }
+  .results {
+    display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+    gap: 0 72px;
+  }
+
+  .who { display: flex; gap: 20px; align-items: flex-start; }
+  .plate {
+    width: 76px; height: 76px; border-radius: 4px; flex: none;
+    background: var(--sunk); border: 1px solid var(--rule); object-fit: cover;
+  }
+  div.plate {
+    display: flex; align-items: center; justify-content: center;
+    font-size: 27px; font-weight: 500; color: var(--ink-3);
+  }
+  .who h2 {
+    font-size: 34px; font-weight: 600; letter-spacing: -.021em;
+    margin: -.28rem 0 .15rem; line-height: 1.14; text-wrap: balance;
+  }
+  .who .head { font-size: 17.5px; color: var(--ink-2); margin: 0 0 .4rem; }
+  .who .geo { font-family: var(--mono); font-size: 13.5px; color: var(--ink-3); margin: 0; }
+  .marks {
+    font-family: var(--mono); font-size: 12px; font-weight: 600;
+    letter-spacing: .09em; margin: .6rem 0 0; color: var(--ink-3);
+  }
+  .marks .on { color: var(--ok); }
+  .marks .sep { color: var(--rule-2); }
+
+  .tele {
+    font-family: var(--mono); font-size: 13px; color: var(--ink-3);
+    margin: 22px 0 0; padding-top: 12px; border-top: 1px solid var(--rule);
+  }
+  .tele .dot { color: var(--ok); }
+  .tele .dot.bad { color: var(--warn); }
+
+  /* ---------- sections ---------- */
+  section { margin-top: 38px; }
+  .slab {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 12px; font-weight: 600; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--ink-3);
+    padding-bottom: .5rem; border-bottom: 1px solid var(--ink);
+  }
+  .slab .n {
+    font-family: var(--mono); font-weight: 400; letter-spacing: 0; font-size: 13px;
+  }
+  .prose {
+    font-size: 16px; line-height: 1.72; color: var(--ink-2);
+    margin: 1rem 0 0; white-space: pre-wrap;
+  }
+
+  .rows > .row { padding: 18px 0; border-bottom: 1px solid var(--rule); }
+  .rows > .row:last-child { border-bottom: 0; padding-bottom: 4px; }
+  .row .t { font-size: 16.5px; font-weight: 600; margin: 0; }
+  .row .o { font-size: 15px; color: var(--ink-2); margin: .1rem 0 0; }
+  .row .m { font-family: var(--mono); font-size: 13px; color: var(--ink-3); margin: .25rem 0 0; }
+  .row .p {
+    font-size: 15px; line-height: 1.72; color: var(--ink-2); margin: .6rem 0 0;
+    white-space: pre-wrap; max-height: 9rem; overflow: hidden; position: relative;
+  }
+  .row .p.clipped::after {
+    content: ""; position: absolute; inset: auto 0 0 0; height: 2.6rem;
+    background: linear-gradient(transparent, var(--paper));
+  }
+  .sub { margin: .9rem 0 0; padding-left: 18px; border-left: 1px solid var(--rule); }
+  .sub .row { padding: .45rem 0; border: 0; }
+  .sub .row .t { font-size: 15px; font-weight: 500; }
+
+  /* ---------- flowing lists ---------- */
+  .flow {
+    display: flex; flex-wrap: wrap; align-items: baseline;
+    column-gap: .45rem; row-gap: .45rem;
+    margin: 1rem 0 0; font-size: 15px; line-height: 1.5; color: var(--ink);
+  }
+  .flow .it { white-space: nowrap; }
+  .flow .it:not(:last-child)::after {
+    content: "·"; color: var(--ink-3); opacity: .55; margin-left: .45rem;
+  }
+  .flow i {
+    font-family: var(--mono); font-style: normal; font-size: 12.5px;
+    color: var(--ink-3); margin-left: 3px;
+  }
+
+  /* ---------- notes ---------- */
+  .note {
+    margin: 34px 0 0; padding-top: 12px; border-top: 1px solid var(--rule);
+  }
+  .note p { font-size: 14px; color: var(--ink-3); margin: 0; max-width: 62ch; }
+  .note b { color: var(--ink-2); font-weight: 600; }
+  .gap { margin: 1rem 0 0; font-size: 15px; color: var(--ink-2); max-width: 62ch; }
+  .gap .k {
+    font-family: var(--mono); font-size: 12px; font-weight: 600;
+    letter-spacing: .09em; color: var(--warn); text-transform: uppercase;
+  }
+
+  /* ---------- raw ---------- */
+  details.raw { margin-top: 34px; }
+  details.raw > summary {
+    display: inline-flex; align-items: center; gap: .4rem; cursor: pointer;
+    font-family: var(--mono); font-size: 13px; color: var(--ink-3);
+    list-style: none; width: fit-content;
+  }
+  details.raw > summary::-webkit-details-marker { display: none; }
+  details.raw > summary:hover { color: var(--ink); }
+  pre {
+    background: var(--sunk); border: 1px solid var(--rule); border-radius: 3px;
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.6; color: var(--ink-2);
+    padding: 14px 16px; margin: .7rem 0 0; overflow-x: auto; max-height: 30rem;
+  }
+
+  /* ---------- transient states ---------- */
+  .loading { display: flex; align-items: center; gap: .6rem; font-size: 15px; color: var(--ink-2); }
+  .pip { width: 7px; height: 7px; background: var(--ink); flex: none; animation: pulse 1.1s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .2; } }
+  @media (prefers-reduced-motion: reduce) { .pip { animation: none; } .chev { transition: none; } }
+
+  .errline { font-family: var(--mono); font-size: 15px; font-weight: 600; color: var(--err); margin: 0; }
+  .errmsg { font-size: 15px; line-height: 1.7; color: var(--ink-2); margin: .4rem 0 0; max-width: 60ch; }
+
+  /* ---------- footer ---------- */
+  footer { margin-top: 52px; padding-top: 14px; border-top: 1px solid var(--rule); }
+  footer .links { font-family: var(--mono); font-size: 13px; color: var(--ink-3); }
+  footer p { font-size: 13.5px; color: var(--ink-3); margin: .55rem 0 0; }
+
+  @media (max-width: 62rem) {
+    .form { grid-template-columns: 1fr; }
+    .form > .field:first-child { padding-right: 0; }
+    .form > .field + .field {
+      border-left: 0; padding-left: 0; border-top: 1px solid var(--rule);
+    }
+    .results { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 34rem) {
+    .col { padding: 0 20px; }
+    .who { flex-direction: column; gap: 14px; }
+    .plate { width: 64px; height: 64px; }
+    .who h2 { font-size: 27px; margin-top: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="col masthead">
+    <div class="top"><h1>LinkedIn Profile API</h1><span class="ver">v1</span></div>
+    <p class="lede">A profile URL in, the profile as structured JSON out.</p>
+  </div>
+
+  <div class="col">
+    <div class="form">
+    <div class="field">
+      <label for="cookie">Your LinkedIn session</label>
+      <p class="fhelp">The <code>cookie</code> header from any logged-in request.
+        Used for this one fetch, never logged and never written to disk &mdash; the
+        service keeps no session of its own, so it spends your account's budget
+        rather than anyone else's.</p>
+      <textarea class="in" id="cookie" spellcheck="false" autocomplete="off"
+        placeholder="li_at=AQEDA&hellip;; JSESSIONID=&quot;ajax:1234&hellip;&quot;; lidc=&hellip;; bcookie=&hellip;"></textarea>
+      <p class="hint" id="cookie-hint">Needs to contain <code>li_at</code>.</p>
+
+      <details class="help">
+        <summary><svg class="chev" width="9" height="9" viewBox="0 0 9 9" fill="none"
+          aria-hidden="true"><path d="M3 1.5 L6.5 4.5 L3 7.5" stroke="currentColor"
+          stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Where do I find this?</summary>
+        <ol>
+          <li>Open <b>linkedin.com</b> in a tab where you're signed in.</li>
+          <li>Press <kbd>F12</kbd>, go to the <b>Network</b> tab, reload.</li>
+          <li>Click any request to <code>www.linkedin.com</code>.</li>
+          <li>Under <b>Request Headers</b>, copy the whole <code>cookie</code> value.</li>
+        </ol>
+        <p><b>Network tab, not Application.</b> Application lists cookies one at a
+        time; you want the entire header the browser sends. <code>li_at</code> alone
+        isn't enough &mdash; LinkedIn also expects <code>JSESSIONID</code>,
+        <code>lidc</code> and <code>bcookie</code>, and without them it bounces the
+        request to a login page.</p>
+      </details>
+    </div>
+
+    <div class="field">
+      <label for="url">Whose profile?</label>
+      <p class="fhelp">Any profile URL. Locale subdomains, tracking parameters and
+        trailing paths all work.</p>
+      <input class="in" type="text" id="url" spellcheck="false" autocomplete="off"
+        disabled placeholder="https://www.linkedin.com/in/&hellip;">
+      <div class="egs" id="examples"></div>
+      <div class="actions">
+        <button class="btn" id="go" disabled>Fetch profile</button>
+        <button class="btn text" id="clear" type="button">Clear session</button>
+      </div>
+    </div>
+    </div>
+
+    <div id="out"></div>
+
+    <footer>
+      <div class="links"><a href="/docs">API reference</a> &middot;
+        <a href="/healthz">Health</a> &middot;
+        <a href="/v1/session">Service state</a></div>
+      <p>Not affiliated with LinkedIn. Built as an engineering exercise &mdash; see
+        the README for limitations.</p>
+    </footer>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var el = function (id) { return document.getElementById(id); };
+  var cookieEl = el("cookie"), urlEl = el("url"), goEl = el("go");
+  var clearEl = el("clear"), hintEl = el("cookie-hint"), outEl = el("out");
+
+  var CHEV = '<svg class="chev" width="9" height="9" viewBox="0 0 9 9" fill="none" ' +
+    'aria-hidden="true"><path d="M3 1.5 L6.5 4.5 L3 7.5" stroke="currentColor" ' +
+    'stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  // The cookie lives in this field and nowhere else -- not localStorage, not
+  // sessionStorage. An authenticated session should not outlive the tab.
+  function cookie() { return cookieEl.value.trim(); }
+  function valid(v) { return /(^|;|\s)li_at=/.test(v); }
+
+  ["williamhgates", "satyanadella", "reidhoffman"].forEach(function (slug) {
+    var b = document.createElement("button");
+    b.type = "button"; b.textContent = "/in/" + slug;
+    b.addEventListener("click", function () {
+      urlEl.value = "https://www.linkedin.com/in/" + slug;
+      gate(); if (!goEl.disabled) run();
+    });
+    el("examples").appendChild(b);
+  });
+
+  function gate() {
+    var v = cookie(), ok = valid(v);
+    urlEl.disabled = !ok;
+    goEl.disabled = !ok || !urlEl.value.trim();
+    if (!v) {
+      hintEl.className = "hint";
+      hintEl.innerHTML = "Needs to contain <code>li_at</code>.";
+    } else if (ok) {
+      hintEl.className = "hint ok";
+      hintEl.textContent = "Looks like a session — checked for real on the first fetch.";
+    } else {
+      hintEl.className = "hint bad";
+      hintEl.innerHTML = "No <code>li_at</code> in there. That's the whole cookie " +
+        "header from the Network tab, not one cookie's value.";
+    }
+  }
+
+  cookieEl.addEventListener("input", gate);
+  urlEl.addEventListener("input", gate);
+  urlEl.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !goEl.disabled) run();
+  });
+  clearEl.addEventListener("click", function () {
+    cookieEl.value = ""; urlEl.value = ""; outEl.innerHTML = ""; gate(); cookieEl.focus();
+  });
+  goEl.addEventListener("click", run);
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  var MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  function when(d) {
+    if (!d || !d.year) return null;
+    return (d.month ? MONTHS[d.month - 1] + " " : "") + d.year;
+  }
+  function span(a, b, current, months) {
+    var from = when(a), to = current ? "Present" : when(b);
+    if (!from && !to) return null;
+    var out = from && to ? from + " – " + to : from ? from : "– " + to;
+    if (months) {
+      var y = Math.floor(months / 12), m = months % 12, dur = [];
+      if (y) dur.push(y + " yr" + (y > 1 ? "s" : ""));
+      if (m) dur.push(m + " mo" + (m > 1 ? "s" : ""));
+      if (dur.length) out += " · " + dur.join(" ");
+    }
+    return out;
+  }
+
+  function run() {
+    var target = urlEl.value.trim();
+    if (!target) return;
+    goEl.disabled = true;
+    outEl.innerHTML = '<div class="loading"><span class="pip"></span>' +
+      "Asking LinkedIn…</div>";
+
+    fetch("/v1/profile?url=" + encodeURIComponent(target), {
+      headers: { "X-LinkedIn-Cookie": cookie() }
+    })
+      .then(function (r) {
+        return r.json().then(function (b) { return { status: r.status, body: b }; });
+      })
+      .then(function (res) {
+        if (res.status !== 200) failure(res.body, res.status);
+        else render(res.body);
+      })
+      .catch(function (e) {
+        failure({ error: "network_error", message: String(e) }, 0);
+      })
+      .finally(function () {
+        gate();
+        outEl.scrollIntoView({ block: "start", behavior: "smooth" });
+      });
+  }
+
+  function failure(body, status) {
+    outEl.innerHTML =
+      '<p class="errline">' + (status ? esc(status) + " · " : "") +
+      esc(body.error || "failed") + "</p>" +
+      '<p class="errmsg">' + esc(body.message || "") +
+      (body.retry_after_seconds
+        ? " Retry in " + esc(body.retry_after_seconds) + "s." : "") +
+      "</p>";
+  }
+
+  function block(title, count, inner) {
+    return "<section><div class=\"slab\"><span>" + esc(title) + "</span>" +
+      '<span class="n">' + (count == null ? "" : count === "" ? "&mdash;" : count) +
+      "</span></div>" + inner + "</section>";
+  }
+
+  function row(title, org, dates, body, nested) {
+    return '<div class="row">' +
+      (title ? '<p class="t">' + esc(title) + "</p>" : "") +
+      (org ? '<p class="o">' + esc(org) + "</p>" : "") +
+      (dates ? '<p class="m">' + esc(dates) + "</p>" : "") +
+      (body ? '<p class="p' + (body.length > 420 ? " clipped" : "") + '">' +
+        esc(body) + "</p>" : "") +
+      (nested ? '<div class="sub">' + nested + "</div>" : "") +
+      "</div>";
+  }
+
+  // A flowing list beats a wall of pills: 38 skills read as one line of text,
+  // and the endorsement count rides along without becoming its own column.
+  function flow(items) {
+    return '<p class="flow">' + items.map(function (it) {
+      return '<span class="it">' + esc(it[0]) +
+        (it[1] ? "<i>" + esc(it[1]) + "</i>" : "") + "</span>";
+    }).join("") + "</p>";
+  }
+
+  function render(data) {
+    var m = data.meta, p = data.profile;
+    var gaps = m.sections_unavailable || [];
+
+    // --- identity ---
+    var pic = p.profile_picture && p.profile_picture.sizes && p.profile_picture.sizes.length
+      ? p.profile_picture.sizes[p.profile_picture.sizes.length - 1].url : null;
+    var initial = ((p.name && p.name.full) || "?").trim().charAt(0).toUpperCase();
+
+    var where = [];
+    if (p.location && p.location.raw) where.push(p.location.raw);
+    if (p.industry) where.push(p.industry);
+
+    var marks = [];
+    [["open_to_work", "OPEN TO WORK", 1], ["hiring", "HIRING", 1],
+     ["premium", "PREMIUM", 0], ["influencer", "INFLUENCER", 0]].forEach(function (f) {
+      if (p[f[0]]) {
+        marks.push(f[2] ? '<span class="on">' + f[1] + "</span>" : f[1]);
+      }
+    });
+
+    var who = '<div class="who">' +
+      (pic
+        ? '<img class="plate" src="' + esc(pic) + '" alt="" ' +
+          'onerror="this.outerHTML=\'<div class=&quot;plate&quot;>' + esc(initial) + '</div>\'">'
+        : '<div class="plate">' + esc(initial) + "</div>") +
+      "<div>" +
+      "<h2>" + esc((p.name && p.name.full) || p.public_identifier) + "</h2>" +
+      (p.headline ? '<p class="head">' + esc(p.headline) + "</p>" : "") +
+      (where.length ? '<p class="geo">' + esc(where.join(" · ")) + "</p>" : "") +
+      (marks.length
+        ? '<p class="marks">' + marks.join('<span class="sep"> · </span>') + "</p>" : "") +
+      "</div></div>";
+
+    // --- telemetry ---
+    var served = 12 - gaps.length;
+    var tele = '<p class="tele"><span class="dot' + (gaps.length ? " bad" : "") +
+      '">&#9679;</span> ' + esc(m.source) + " · " +
+      (m.duration_ms / 1000).toFixed(2) + " s · cache " + esc(m.cache) + " · " +
+      (gaps.length
+        ? served + " of 12 sections · " + esc(gaps.join(", ")) + " unavailable"
+        : "12 of 12 sections") + "</p>";
+
+    // --- sections ---
+    var main = "", aside = "";
+    empties = [];
+
+    if (p.about) {
+      main += block("About", null, '<p class="prose">' + esc(p.about) + "</p>");
+    }
+
+    main += list("Experience", "experience", gaps, p.experience, function (x) {
+      var nested = (x.sub_positions || []).map(function (r) {
+        return row(r.title, r.employment_type || null,
+          span(r.start, r.end, r.is_current, r.duration_months), r.description);
+      }).join("");
+      return row(
+        x.title,
+        [x.company, x.employment_type].filter(Boolean).join(" · "),
+        [span(x.start, x.end, x.is_current, x.duration_months), x.location]
+          .filter(Boolean).join(" · "),
+        x.description, nested);
+    });
+
+    main += list("Education", "education", gaps, p.education, function (x) {
+      return row(x.school,
+        [x.degree, x.field_of_study].filter(Boolean).join(", "),
+        [span(x.start, x.end), x.grade ? "Grade " + x.grade : null]
+          .filter(Boolean).join(" · "),
+        x.description || x.activities);
+    });
+
+    if (gaps.indexOf("skills") !== -1) {
+      aside += block("Skills", "", unavailable());
+    } else if ((p.skills || []).length) {
+      aside += block("Skills", p.skills.length, flow(p.skills.map(function (s) {
+        return [s.name, s.endorsement_count || null];
+      })));
+    } else {
+      empties.push("skills");
+    }
+
+    main += list("Projects", "projects", gaps, p.projects, function (x) {
+      return row(x.name, x.url, span(x.start, x.end), x.description);
+    });
+
+    aside += list("Certifications", "certifications", gaps, p.certifications,
+      function (x) {
+        return row(x.name, x.issuer,
+          [when(x.issue_date) ? "Issued " + when(x.issue_date) : null,
+           when(x.expiry_date) ? "Expires " + when(x.expiry_date) : null,
+           x.credential_id ? "ID " + x.credential_id : null]
+            .filter(Boolean).join(" · "), null);
+      });
+
+    if (gaps.indexOf("languages") !== -1) {
+      aside += block("Languages", "", unavailable());
+    } else if ((p.languages || []).length) {
+      aside += block("Languages", p.languages.length, flow(p.languages.map(function (l) {
+        return [l.name, l.proficiency
+          ? l.proficiency.toLowerCase().replace(/_/g, " ") : null];
+      })));
+    } else {
+      empties.push("languages");
+    }
+
+    main += list("Volunteering", "volunteering", gaps, p.volunteering, function (x) {
+      return row(x.role, x.organization, span(x.start, x.end), x.description);
+    });
+    aside += list("Honors", "honors", gaps, p.honors, function (x) {
+      return row(x.title, x.issuer, when(x.issued_on), x.description);
+    });
+    main += list("Publications", "publications", gaps, p.publications, function (x) {
+      return row(x.name, x.publisher, when(x.published_on), x.description);
+    });
+    aside += list("Courses", "courses", gaps, p.courses, function (x) {
+      return row(x.name, x.number, null, null);
+    });
+    main += list("Patents", "patents", gaps, p.patents, function (x) {
+      return row(x.title, x.issuer, when(x.issued_on), x.description);
+    });
+    aside += list("Organizations", "organizations", gaps, p.organizations, function (x) {
+      return row(x.name, x.position, span(x.start, x.end), x.description);
+    });
+
+    outEl.innerHTML = who + tele +
+      (main || aside
+        ? '<div class="results"><div>' + main + "</div><div>" + aside + "</div></div>"
+        : "") +
+      emptyNote() +
+      '<details class="raw"><summary>' + CHEV + " Raw JSON response</summary><pre>" +
+      esc(JSON.stringify(data, null, 2)) + "</pre></details>";
+  }
+
+  function unavailable() {
+    return '<p class="gap"><span class="k">Not fetched</span><br>LinkedIn did not ' +
+      "serve this section, so it is reported as unavailable rather than shown as " +
+      "empty. An empty list here would be indistinguishable from having none.</p>";
+  }
+
+  // Sections that were fetched fine and hold nothing. Six headings each saying
+  // "None listed" is noise; one honest line at the end says the same thing
+  // without burying the sections that do have content.
+  var empties = [];
+
+  function list(title, key, gaps, items, fn) {
+    if (gaps.indexOf(key) !== -1) return block(title, "", unavailable());
+    if (!items || !items.length) { empties.push(title.toLowerCase()); return ""; }
+    return block(title, items.length,
+      '<div class="rows">' + items.map(fn).join("") + "</div>");
+  }
+
+  function emptyNote() {
+    if (!empties.length) return "";
+    return '<div class="note"><p><b>Nothing listed under</b> ' +
+      esc(empties.join(", ")) + ". These were fetched successfully — LinkedIn " +
+      "returned no entries, which is different from the service failing to ask." +
+      "</p></div>";
+  }
+
+  gate();
+})();
+</script>
+</body>
+</html>

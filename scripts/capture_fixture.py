@@ -1,20 +1,10 @@
 """Capture a live Voyager payload as a test fixture, redacting as it goes.
 
-The offline test suite is only as good as the shapes it runs against, and those
-shapes change when LinkedIn ships. This is how you refresh them.
-
     python scripts/capture_fixture.py profileview ada-sundqvist
     python scripts/capture_fixture.py section experience ada-sundqvist
-    python scripts/capture_fixture.py profile ada-sundqvist
 
-Redaction runs before anything is written, and the session is never written at
-all. It replaces member identifiers, real names, image hosts and URNs with
-synthetic stand-ins, keeping the *structure* -- which is the only part a parser
-test cares about.
-
-Redaction is mechanical, so it is a first pass and not a guarantee. **Read the
-output before committing it.** A profile containing something the pattern list
-does not anticipate will pass straight through.
+Redaction replaces names, identifiers and hosts, keeping the structure. It is
+mechanical, so read the output before committing it.
 """
 
 from __future__ import annotations
@@ -90,7 +80,7 @@ async def capture(kind: str, slug: str, section: str | None) -> dict[str, Any]:
     settings = get_settings()
     sessions = SessionManager(settings)
     client = VoyagerClient(settings, sessions)
-    registry = QueryIdRegistry(settings, client)
+    registry = QueryIdRegistry(settings)
 
     try:
         if kind == "profileview":
@@ -104,7 +94,7 @@ async def capture(kind: str, slug: str, section: str | None) -> dict[str, Any]:
                 {
                     "includeWebMetadata": "true",
                     "variables": _restli_variables({"vanityName": slug}),
-                    "queryId": await registry.get(QUERY_PROFILE_BY_VANITY),
+                    "queryId": await registry.get(QUERY_PROFILE_BY_VANITY, client),
                 },
             )
 
@@ -119,7 +109,7 @@ async def capture(kind: str, slug: str, section: str | None) -> dict[str, Any]:
                 {
                     "includeWebMetadata": "true",
                     "variables": _restli_variables({"vanityName": slug}),
-                    "queryId": await registry.get(QUERY_PROFILE_BY_VANITY),
+                    "queryId": await registry.get(QUERY_PROFILE_BY_VANITY, client),
                 },
             )
             urn = _find_profile_urn(profile)
@@ -136,7 +126,7 @@ async def capture(kind: str, slug: str, section: str | None) -> dict[str, Any]:
                             "locale": "en_US",
                         }
                     ),
-                    "queryId": await registry.get(QUERY_PROFILE_COMPONENTS),
+                    "queryId": await registry.get(QUERY_PROFILE_COMPONENTS, client),
                 },
             )
 

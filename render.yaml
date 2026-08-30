@@ -1,8 +1,8 @@
-# Render blueprint. A `render.yaml` in the repo root lets Render build this
-# service from the Dockerfile with no dashboard configuration.
+# Render blueprint, a working alternative to fly.toml on the same Dockerfile.
+# Fly is what's deployed -- see fly.toml for why.
 #
-# Secrets are declared here by NAME only, with `sync: false`, which tells Render
-# to prompt for the value in the dashboard and never read it from the repo.
+# There are no secrets to set. Callers send their own LinkedIn session per
+# request; the service stores none of its own.
 services:
   - type: web
     name: linkedin-profile-api
@@ -12,31 +12,25 @@ services:
     healthCheckPath: /healthz
 
     envVars:
-      # --- secrets: set in the Render dashboard, never in this file ---
-      - key: LINKEDIN_LI_AT
-        sync: false
-      - key: LINKEDIN_JSESSIONID
-        sync: false
-      - key: API_KEYS
-        sync: false
-      # Optional. A residential proxy, for when Render's IP draws HTTP 999.
-      - key: OUTBOUND_PROXY_URL
-        sync: false
-      # Optional. Pin GraphQL queryIds if runtime discovery breaks.
+      - key: RATE_LIMIT_PER_HOUR
+        value: "60"
+      # LinkedIn blocks an IP as a unit, so one heavy caller getting the shared
+      # outbound address flagged would break it for everyone.
+      - key: OUTBOUND_MAX_PER_MINUTE
+        value: "30"
+      - key: CACHE_TTL_SECONDS
+        value: "21600"
+      - key: LOG_LEVEL
+        value: INFO
+      # Logs go to Render's collector, not a terminal.
+      - key: LOG_COLOUR
+        value: never
+
+      # Set in the dashboard, from scripts/pin_queryids.py. Pinned ids mean the
+      # service never fetches a LinkedIn HTML page, which draws HTTP 999.
       - key: LINKEDIN_QUERY_IDS_JSON
         sync: false
 
-      # --- non-secret configuration ---
-      - key: DEMO_PROFILES
-        value: williamhgates,satyanadella,jeffweiner08
-      - key: CACHE_TTL_SECONDS
-        value: "21600"
-      - key: DEMO_RATE_LIMIT_PER_HOUR
-        value: "20"
-      - key: KEYED_RATE_LIMIT_PER_HOUR
-        value: "300"
-      # Low on purpose. This is the limit that protects the LinkedIn account.
-      - key: OUTBOUND_MAX_PER_MINUTE
-        value: "30"
-      - key: LOG_LEVEL
-        value: INFO
+      # Optional residential proxy, for when the host IP gets flagged anyway.
+      - key: OUTBOUND_PROXY_URL
+        sync: false

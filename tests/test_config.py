@@ -1,10 +1,7 @@
-"""Settings loading, including from a real .env file.
+"""Settings loading from a real .env file.
 
-The rest of the suite constructs Settings directly with `_env_file=None`, which
-skips the dotenv source entirely. That blind spot hid a real failure: a
-comma-separated list in a .env file raised SettingsError before any validator
-ran, so the app could pass every test and still refuse to start in production.
-These tests exercise the dotenv path specifically.
+The rest of the suite passes `_env_file=None`, which skips the dotenv source --
+a blind spot that once hid a startup failure every other test passed through.
 """
 
 from __future__ import annotations
@@ -15,6 +12,15 @@ import pytest
 
 from app.config import Settings
 
+RETIRED = (
+    "LINKEDIN_COOKIE",
+    "LINKEDIN_LI_AT",
+    "LINKEDIN_EMAIL",
+    "LINKEDIN_PASSWORD",
+    "API_KEYS",
+    "DEMO_PROFILES",
+)
+
 
 def write_env(tmp_path: Path, body: str) -> Path:
     path = tmp_path / ".env"
@@ -22,65 +28,46 @@ def write_env(tmp_path: Path, body: str) -> Path:
     return path
 
 
-def test_csv_lists_load_from_a_dotenv_file(tmp_path: Path) -> None:
+def test_numbers_load_from_a_dotenv_file(tmp_path: Path) -> None:
     env = write_env(
         tmp_path,
-        "API_KEYS=key-one,key-two\nDEMO_PROFILES=alice,bob,carol\n",
+        "OUTBOUND_MAX_PER_MINUTE=7\nRATE_LIMIT_PER_HOUR=11\nLOG_LEVEL=WARNING\n",
     )
 
     settings = Settings(_env_file=env)
 
-    assert settings.api_keys == ["key-one", "key-two"]
-    assert settings.demo_profiles == ["alice", "bob", "carol"]
-
-
-def test_single_value_list_needs_no_comma(tmp_path: Path) -> None:
-    env = write_env(tmp_path, "API_KEYS=only-one-key\n")
-    assert Settings(_env_file=env).api_keys == ["only-one-key"]
-
-
-def test_empty_list_values_are_empty_not_a_blank_entry(tmp_path: Path) -> None:
-    env = write_env(tmp_path, "API_KEYS=\n")
-    assert Settings(_env_file=env).api_keys == []
-
-
-def test_whitespace_around_entries_is_stripped(tmp_path: Path) -> None:
-    env = write_env(tmp_path, "DEMO_PROFILES= alice , bob ,, carol \n")
-    assert Settings(_env_file=env).demo_profiles == ["alice", "bob", "carol"]
-
-
-def test_credentials_load_from_dotenv(tmp_path: Path) -> None:
-    env = write_env(
-        tmp_path,
-        "LINKEDIN_LI_AT=cookie-value\nOUTBOUND_MAX_PER_MINUTE=7\n",
-    )
-
-    settings = Settings(_env_file=env)
-
-    assert settings.has_cookie_session is True
-    assert settings.has_login_credentials is False
     assert settings.outbound_max_per_minute == 7
-
-
-def test_login_path_needs_both_email_and_password(tmp_path: Path) -> None:
-    """A half-filled credential pair must not look like a usable session."""
-    env = write_env(tmp_path, "LINKEDIN_PASSWORD=only-a-password\n")
-    settings = Settings(_env_file=env)
-
-    assert settings.has_login_credentials is False
-    assert settings.has_cookie_session is False
+    assert settings.rate_limit_per_hour == 11
+    assert settings.log_level == "WARNING"
 
 
 def test_a_comment_only_env_file_yields_defaults(tmp_path: Path) -> None:
-    env = write_env(tmp_path, "# nothing set here\n\n")
-    settings = Settings(_env_file=env)
+    settings = Settings(_env_file=write_env(tmp_path, "# nothing set here\n\n"))
 
-    assert settings.api_keys == []
-    assert settings.demo_profiles == [
-        "williamhgates",
-        "satyanadella",
-        "jeffweiner08",
-    ]
+    assert settings.outbound_max_per_minute == 30
+    assert settings.rate_limit_per_hour == 60
+    assert settings.log_colour == "auto"
+
+
+def test_retired_variables_are_ignored_not_fatal(tmp_path: Path) -> None:
+    """A developer's stale .env must not crash the app, or resurrect a setting.
+
+    `extra="ignore"` handles the first. The second matters more: nothing should
+    be able to reintroduce a server-side credential by leaving a line behind.
+    """
+    body = "".join(f"{name}=leftover-value\n" for name in RETIRED)
+    settings = Settings(_env_file=write_env(tmp_path, body))
+
+    for name in RETIRED:
+        assert not hasattr(settings, name.lower())
+
+
+def test_settings_expose_no_credential_fields() -> None:
+    """The service stores nothing. This asserts that structurally."""
+    fields = set(Settings.model_fields)
+
+    for forbidden in ("linkedin_cookie", "api_keys", "linkedin_password"):
+        assert forbidden not in fields
 
 
 @pytest.mark.parametrize(

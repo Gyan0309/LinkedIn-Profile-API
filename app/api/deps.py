@@ -1,15 +1,11 @@
-"""Caller-facing gate: who may ask for what, and how often.
+"""Caller-facing gate: a per-IP rate limit, and nothing else.
 
-The service is a public HTTPS endpoint sitting in front of one LinkedIn session,
-so an open proxy would hand anyone the ability to spend that account's request
-budget -- and the account is the part that cannot be re-provisioned in thirty
-seconds. The compromise is a two-tier gate.
+An API key and demo allowlist used to live here to stop strangers spending our
+LinkedIn budget. With callers supplying their own sessions there is no such
+budget, so they gated nothing. The cookie is the credential now.
 
-Without a key, a caller may query a small fixed allowlist of well-known public
-profiles. That is enough to evaluate the API end to end -- paste a URL, get JSON
-back -- without letting the internet aim the session wherever it likes.
-
-With a key, any profile URL is allowed, at a higher rate.
+The rate limit stays because the outbound IP really is shared, and LinkedIn
+blocks an IP as a unit.
 """
 
 from __future__ import annotations
@@ -18,21 +14,33 @@ import time
 from dataclasses import dataclass, field
 
 from fastapi import Request
+from fastapi.security import APIKeyHeader
 
-from app.config import Settings
-from app.errors import AuthenticationRequired, CallerRateLimited, DemoScopeExceeded
+from app.errors import CallerRateLimited
+
+linkedin_cookie_scheme = APIKeyHeader(
+    name="X-LinkedIn-Cookie",
+    scheme_name="LinkedInSession",
+    auto_error=False,
+    description=(
+        "Your LinkedIn session: the whole Cookie header from a logged-in browser "
+        "request (DevTools > Network > any www.linkedin.com request > Request "
+        "Headers > cookie). This service stores no credentials of its own, so "
+        "every request needs one. It is never logged and never written to disk."
+    ),
+)
+
+
+def caller_cookie(request: Request) -> str:
+    """The LinkedIn session a caller supplied, if any."""
+    return (request.headers.get("x-linkedin-cookie") or "").strip()
 
 
 @dataclass
 class Caller:
-    """The resolved identity and entitlements of one request."""
+    """Who is asking, for rate-limiting purposes only."""
 
-    keyed: bool
     identifier: str
-
-    @property
-    def tier(self) -> str:
-        return "keyed" if self.keyed else "demo"
 
 
 @dataclass
@@ -43,22 +51,12 @@ class _Window:
 
 @dataclass
 class RateLimiter:
-    """Fixed-window per-caller limiter.
+    """Fixed-window per-caller limiter. The outbound limiter absorbs bursts."""
 
-    A fixed window rather than a sliding one: the failure mode of a fixed window
-    is that a caller can burst across a boundary, and the outbound limiter in
-    client.py absorbs that anyway. It is not worth more machinery here.
-    """
-
-    demo_per_hour: int
-    keyed_per_hour: int
+    per_hour: int
     _windows: dict[str, _Window] = field(default_factory=dict)
 
-    def limit_for(self, caller: Caller) -> int:
-        return self.keyed_per_hour if caller.keyed else self.demo_per_hour
-
     def check(self, caller: Caller) -> None:
-        limit = self.limit_for(caller)
         now = time.time()
         window = self._windows.setdefault(caller.identifier, _Window())
 
@@ -66,10 +64,9 @@ class RateLimiter:
             window.count = 0
             window.resets_at = now + 3600
 
-        if window.count >= limit:
+        if window.count >= self.per_hour:
             raise CallerRateLimited(
-                f"Rate limit of {limit} requests/hour reached for the "
-                f"{caller.tier} tier.",
+                f"Rate limit of {self.per_hour} requests/hour reached.",
                 retry_after=max(1, int(window.resets_at - now)),
             )
         window.count += 1
@@ -77,45 +74,16 @@ class RateLimiter:
     def snapshot(self, caller: Caller) -> dict[str, object]:
         window = self._windows.get(caller.identifier)
         return {
-            "tier": caller.tier,
-            "limit_per_hour": self.limit_for(caller),
+            "limit_per_hour": self.per_hour,
             "used": window.count if window else 0,
         }
 
 
-def resolve_caller(request: Request, settings: Settings) -> Caller:
-    """Identify the caller from its API key, or fall back to the demo tier."""
-    presented = (request.headers.get("x-api-key") or "").strip()
-
-    if presented:
-        if presented not in settings.api_keys:
-            raise AuthenticationRequired("The API key presented is not recognised.")
-        # Keyed callers are limited per key, not per IP, so a team behind one NAT
-        # is not throttled as though it were a single caller.
-        return Caller(keyed=True, identifier=f"key:{presented[:8]}")
-
+def resolve_caller(request: Request) -> Caller:
+    """Identify the caller by address, for rate limiting."""
     client_host = request.client.host if request.client else "unknown"
     forwarded = request.headers.get("x-forwarded-for", "")
     if forwarded:
-        # Render terminates TLS upstream, so the real client is first in the list.
+        # Fly terminates TLS upstream, so the real client is first in the list.
         client_host = forwarded.split(",")[0].strip() or client_host
-
-    return Caller(keyed=False, identifier=f"ip:{client_host}")
-
-
-def authorise_profile(
-    caller: Caller, public_identifier: str, settings: Settings
-) -> None:
-    """Keyed callers may query anything; demo callers only the allowlist."""
-    if caller.keyed:
-        return
-
-    allowlist = {name.lower() for name in settings.demo_profiles}
-    if public_identifier.lower() in allowlist:
-        return
-
-    raise DemoScopeExceeded(
-        "Without an API key this service serves only its demo profiles "
-        f"({', '.join(sorted(allowlist)) or 'none configured'}). Present a valid "
-        "X-API-Key header to query arbitrary profiles."
-    )
+    return Caller(identifier=f"ip:{client_host}")

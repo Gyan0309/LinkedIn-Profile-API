@@ -26,3 +26,5 @@ Thumbs.db
 
 # Live test output — real profile data, never committed
 live_result.json
+
+EXPLAINER.md

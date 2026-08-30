@@ -1,13 +1,7 @@
-"""In-process TTL cache for completed profile responses.
+"""In-process TTL cache, so repeat calls do not become repeat LinkedIn requests.
 
-Serves two purposes, and the second is the important one. It makes repeat calls
-fast, and it keeps a burst of demo traffic from turning into a burst of LinkedIn
-requests -- a public endpoint that fetched upstream on every call would get the
-backing account restricted within an afternoon.
-
-Deliberately in-process rather than Redis. A single instance is the deployment
-shape, and a cache that needs its own service to start is a worse default than
-one that cannot survive a restart. Losing the cache on restart costs one refetch.
+In-process rather than Redis: losing it on restart costs one refetch, which is
+cheaper than requiring another service to boot.
 """
 
 from __future__ import annotations

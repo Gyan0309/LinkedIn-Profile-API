@@ -1,12 +1,8 @@
-"""Turn whatever a caller pastes into a LinkedIn public identifier (the "vanity name").
+"""Turn whatever a caller pastes into a LinkedIn public identifier.
 
-Callers paste URLs copied from a browser address bar, a share sheet, or an email,
-so the input is messier than the happy path suggests: tracking query strings,
-locale subdomains, trailing section paths, percent-encoded non-ASCII slugs, and
-the legacy /pub/ form that LinkedIn still redirects from.
-
-Everything downstream works from the extracted identifier alone, so this module is
-the only place that has to care about URL shape.
+Handles tracking parameters, locale subdomains, trailing section paths,
+percent-encoded non-ASCII slugs and the legacy /pub/ form. Everything
+downstream works from the identifier alone.
 """
 
 from __future__ import annotations
@@ -16,12 +12,10 @@ from urllib.parse import unquote, urlparse
 
 from app.errors import InvalidProfileURL
 
-# LinkedIn allows unicode in vanity names (e.g. /in/andré-müller-1a2b3c). It does
-# not allow spaces, slashes, or the reserved characters a path separator implies.
+# Unicode is allowed in vanity names; path separators are not.
 _SLUG_RE = re.compile(r"^[^\s/?#%]+$", re.UNICODE)
 
-# Paths under linkedin.com that are emphatically not member profiles. Called out
-# by name so the error tells the caller what they actually pasted.
+# Not member profiles. Named so the error can say what was actually pasted.
 _NON_PROFILE_PATHS = {
     "company": "a company page",
     "school": "a school page",
@@ -40,12 +34,9 @@ _LINKEDIN_HOST_RE = re.compile(r"^(?:[a-z]{2,3}\.)?linkedin\.com$", re.IGNORECAS
 
 
 def extract_public_identifier(raw: str) -> str:
-    """Extract the public identifier from a LinkedIn profile URL.
+    """Extract the public identifier, or raise InvalidProfileURL saying why.
 
-    Also accepts a bare identifier, since that is what our own `meta` block emits
-    and round-tripping our own output should not require reconstructing a URL.
-
-    Raises InvalidProfileURL with a message that names the actual problem.
+    A bare identifier is accepted too, since that is what `meta` emits.
     """
     if not raw or not raw.strip():
         raise InvalidProfileURL("No profile URL supplied.")
@@ -56,7 +47,7 @@ def extract_public_identifier(raw: str) -> str:
     if "/" not in candidate and "." not in candidate:
         return _validate_slug(unquote(candidate))
 
-    # urlparse needs a scheme to populate netloc rather than folding it into path.
+    # urlparse needs a scheme or it folds the host into the path.
     if "://" not in candidate:
         candidate = "https://" + candidate.lstrip("/")
 
@@ -83,8 +74,7 @@ def extract_public_identifier(raw: str) -> str:
     if head == "in":
         if len(segments) < 2:
             raise InvalidProfileURL("URL is /in/ with no identifier after it.")
-        # Anything after the identifier is a profile subsection
-        # (/detail/experience, /recent-activity) and is discarded.
+        # Anything after the identifier is a subsection; discard it.
         return _validate_slug(unquote(segments[1]))
 
     if head == "pub":
@@ -109,5 +99,5 @@ def _validate_slug(slug: str) -> str:
 
 
 def canonical_profile_url(public_identifier: str) -> str:
-    """The canonical URL for an identifier, echoed back in the response meta block."""
+    """The canonical URL for an identifier."""
     return f"https://www.linkedin.com/in/{public_identifier}"

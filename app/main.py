@@ -1,14 +1,7 @@
-"""Application entry point: `uvicorn app.main:app`.
+"""Entry point: `uvicorn app.main:app`. Wiring and error translation only.
 
-Wiring and error translation only. Every piece with real logic lives behind it --
-`app/linkedin/` talks to LinkedIn, `app/extract/` reads what comes back, and
-`app/api/` decides who is allowed to ask.
-
-The exception handler is the load-bearing part of this module. Every failure this
-service raises deliberately is a `LinkedInAPIError` carrying its own status and a
-stable reason code, so a caller can branch on `error` without parsing prose, and
-an unexpected exception is reported as an unexpected exception rather than being
-dressed up as an empty profile.
+Every deliberate failure is a `LinkedInAPIError` carrying its own status and a
+stable reason code, so callers branch on `error` rather than parsing prose.
 """
 
 from __future__ import annotations
@@ -27,9 +20,7 @@ from app.api.routes import router
 from app.cache import TTLCache
 from app.config import get_settings
 from app.errors import LinkedInAPIError
-from app.linkedin.auth import SessionManager
-from app.linkedin.client import VoyagerClient
-from app.linkedin.fetch import ProfileFetcher
+from app.linkedin.client import CircuitBreaker, OutboundLimiter
 from app.linkedin.queryids import QueryIdRegistry
 from app.logging_config import (
     configure_logging,
@@ -40,44 +31,31 @@ from app.logging_config import (
 )
 
 settings = get_settings()
-configure_logging(settings.log_level)
+configure_logging(settings.log_level, settings.log_colour)
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Build the object graph once, and close the HTTP client on the way out.
-
-    Nothing here contacts LinkedIn. The session is acquired lazily on the first
-    real request, so the service starts and reports healthy even when the cookie
-    is missing or expired -- that is an operational problem to surface through
-    /v1/session, not a reason to refuse to boot.
-    """
+    """Build the shared object graph. Nothing here contacts LinkedIn."""
     app.state.settings = settings
-    app.state.sessions = SessionManager(settings)
-    app.state.client = VoyagerClient(settings, app.state.sessions)
-    app.state.registry = QueryIdRegistry(settings, app.state.client)
-    app.state.fetcher = ProfileFetcher(app.state.client, app.state.registry)
+    # Shared across requests on purpose: these describe LinkedIn and our one
+    # outbound IP, not any caller. Per-request copies would guard nothing.
+    app.state.registry = QueryIdRegistry(settings)
+    app.state.outbound = OutboundLimiter(settings.outbound_max_per_minute)
+    app.state.breaker = CircuitBreaker()
     app.state.cache = TTLCache(settings.cache_ttl_seconds)
-    app.state.limiter = RateLimiter(
-        demo_per_hour=settings.demo_rate_limit_per_hour,
-        keyed_per_hour=settings.keyed_rate_limit_per_hour,
-    )
+    app.state.limiter = RateLimiter(per_hour=settings.rate_limit_per_hour)
 
     logger.info(
-        "started: session=%s keys=%d demo_profiles=%d proxy=%s",
-        "configured"
-        if settings.has_cookie_session or settings.has_login_credentials
-        else "MISSING",
-        len(settings.api_keys),
-        len(settings.demo_profiles),
+        "started: credentials=none (callers supply their own) "
+        "inbound=%d/h outbound=%d/min proxy=%s",
+        settings.rate_limit_per_hour,
+        settings.outbound_max_per_minute,
         "yes" if settings.outbound_proxy_url else "no",
     )
 
-    try:
-        yield
-    finally:
-        await app.state.client.aclose()
+    yield
 
 
 app = FastAPI(
@@ -99,15 +77,10 @@ app.include_router(router)
 
 @app.middleware("http")
 async def trace_requests(request: Request, call_next):
-    """Assign a request id and bookend every request with a log line.
-
-    The id is echoed in the `X-Request-ID` response header, so a caller reporting
-    a problem can quote it and land directly on the right lines in the log
-    instead of describing what they saw.
-    """
+    """Tag each request with an id, echoed as `X-Request-ID`, and log both ends."""
     incoming = request.headers.get("x-request-id", "").strip()
-    # Honour a caller-supplied id so a trace can span a proxy, but bound it --
-    # this value goes into every log line and must not become a payload.
+    # Honour a caller's id so a trace can span a proxy, but bound it: this goes
+    # into every log line.
     request_id = incoming[:32] if incoming else new_request_id()
     set_request_id(request_id)
 
@@ -170,12 +143,7 @@ async def handle_validation_error(
 
 @app.exception_handler(Exception)
 async def handle_unexpected(_: Request, exc: Exception) -> JSONResponse:
-    """An unexpected failure is reported as one.
-
-    Never degraded into a 200 with an empty profile: a caller cannot tell that
-    apart from a real person with no work history, and silently returning the
-    wrong answer is worse than returning none.
-    """
+    """An unexpected failure is reported as one, never as an empty profile."""
     logger.exception("unhandled error: %s", exc)
     return JSONResponse(
         status_code=500,

@@ -17,13 +17,15 @@ from app.errors import (
     LinkedInRateLimited,
     ProfileNotFound,
     QueryRejected,
+    SessionRejected,
     SessionUnavailable,
     UpstreamUnavailable,
 )
-from app.linkedin.auth import SessionManager
+from app.linkedin.auth import SessionManager, parse_cookie_header
 from app.linkedin.client import MAX_ATTEMPTS, VoyagerClient
 
-PROFILE_URL = "https://www.linkedin.com/voyager/api/identity/profiles/x/profileView"
+VOYAGER = "https://www.linkedin.com/voyager/api"
+PROFILE_URL = f"{VOYAGER}/identity/profiles/x/profileView"
 
 
 @pytest.fixture
@@ -38,12 +40,9 @@ def client(monkeypatch: pytest.MonkeyPatch) -> VoyagerClient:
     monkeypatch.setattr(VoyagerClient, "_backoff", staticmethod(no_wait))
     monkeypatch.setattr("app.linkedin.client.OutboundLimiter.acquire", no_wait)
 
-    settings = Settings(
-        _env_file=None,
-        linkedin_li_at="synthetic-cookie-value",
-        linkedin_jsessionid="ajax:1234567890123456789",
-    )
-    return VoyagerClient(settings, SessionManager(settings))
+    settings = Settings(_env_file=None)
+    cookie = 'li_at=synthetic-cookie-value; JSESSIONID="ajax:1234567890123456789"'
+    return VoyagerClient(settings, SessionManager(settings, cookie_override=cookie))
 
 
 @respx.mock
@@ -215,29 +214,188 @@ async def test_restli_syntax_survives_url_encoding(client: VoyagerClient) -> Non
 
 
 async def test_session_manager_refuses_when_nothing_is_configured() -> None:
-    settings = Settings(_env_file=None, linkedin_li_at="", linkedin_email="")
-
     with pytest.raises(SessionUnavailable) as excinfo:
-        await SessionManager(settings).get()
+        await SessionManager(Settings(_env_file=None)).get()
 
-    assert "LINKEDIN_LI_AT" in str(excinfo.value)
-
-
-async def test_session_synthesises_a_jsessionid_when_only_the_cookie_is_given() -> None:
-    """The CSRF header only has to match the cookie we send, not be server-issued."""
-    settings = Settings(_env_file=None, linkedin_li_at="cookie-value")
-
-    session = await SessionManager(settings).get()
-
-    assert session.csrf_token.startswith("ajax:")
-    assert f'JSESSIONID="{session.csrf_token}"' in session.cookie_header
-    assert session.cookie_header.startswith("li_at=cookie-value;")
+    assert "X-LinkedIn-Cookie" in str(excinfo.value)
 
 
 async def test_redacted_session_never_exposes_the_cookie() -> None:
-    settings = Settings(_env_file=None, linkedin_li_at="A" * 40)
+    manager = SessionManager(
+        Settings(_env_file=None), cookie_override=f"li_at={'A' * 40}"
+    )
 
-    redacted = (await SessionManager(settings).get()).redacted()
+    redacted = (await manager.get()).redacted()
 
     assert "A" * 40 not in str(redacted)
     assert redacted["li_at_fingerprint"] == "AAAA...AAAA"
+
+
+# --- a rejected session -----------------------------------------------------
+
+
+@respx.mock
+async def test_redirect_to_login_is_diagnosed_not_called_unexpected(
+    client: VoyagerClient,
+) -> None:
+    """A 3xx from Voyager always means the session was refused.
+
+    Reporting it as a generic "unexpected response" sent the reader looking for
+    a LinkedIn outage when the answer was their cookie.
+    """
+    respx.get(PROFILE_URL).mock(
+        return_value=httpx.Response(
+            302, headers={"location": "https://www.linkedin.com/uas/login?..."}
+        )
+    )
+
+    with pytest.raises(SessionRejected) as excinfo:
+        await client.get_voyager("identity/profiles/x/profileView")
+
+    assert excinfo.value.reason == "linkedin_session_rejected"
+    assert "X-LinkedIn-Cookie" in str(excinfo.value)
+
+
+@respx.mock
+async def test_redirect_to_checkpoint_says_verify_in_a_browser(
+    client: VoyagerClient,
+) -> None:
+    respx.get(PROFILE_URL).mock(
+        return_value=httpx.Response(
+            303, headers={"location": "https://www.linkedin.com/checkpoint/challenge/"}
+        )
+    )
+
+    with pytest.raises(SessionRejected) as excinfo:
+        await client.get_voyager("identity/profiles/x/profileView")
+
+    assert "browser" in str(excinfo.value)
+
+
+@respx.mock
+async def test_a_rejected_session_is_not_retried(client: VoyagerClient) -> None:
+    """The cookie will not become valid on the second attempt."""
+    route = respx.get(PROFILE_URL).mock(
+        return_value=httpx.Response(302, headers={"location": "/uas/login"})
+    )
+
+    with pytest.raises(SessionRejected):
+        await client.get_voyager("identity/profiles/x/profileView")
+
+    assert route.call_count == 1
+
+
+# --- the full cookie header -------------------------------------------------
+
+
+def test_cookie_header_parsing_is_tolerant() -> None:
+    """People paste with a `Cookie:` prefix, with quotes, and across lines."""
+    jar = parse_cookie_header(
+        '  Cookie: li_at=AQEDvalue;  JSESSIONID="ajax:99";  bcookie=v2  '
+    )
+    assert jar["li_at"] == "AQEDvalue"
+    assert jar["JSESSIONID"] == '"ajax:99"'
+    assert jar["bcookie"] == "v2"
+
+    wrapped = parse_cookie_header("li_at=AQEDvalue;\n  lidc=b=tr1;\r\n bscookie=x")
+    assert wrapped["li_at"] == "AQEDvalue"
+    assert wrapped["bscookie"] == "x"
+
+    assert parse_cookie_header("   ") == {}
+    assert parse_cookie_header("nonsense-with-no-equals") == {}
+
+
+async def test_full_cookie_header_is_sent_verbatim() -> None:
+    """Reconstructing the cookie set from two values would drop the rest."""
+    raw = 'li_at=AQEDvalue; JSESSIONID="ajax:4242424242424242424"; lidc=b=tr1; bcookie=v=2'
+    session = await SessionManager(
+        Settings(_env_file=None), cookie_override=raw
+    ).get()
+
+    assert session.source == "caller-header"
+    assert session.cookie_header == raw
+    assert session.li_at == "AQEDvalue"
+    assert session.csrf_token == "ajax:4242424242424242424"
+
+
+async def test_cookie_header_without_jsessionid_gets_one_appended() -> None:
+    """The csrf-token header needs a JSESSIONID to agree with."""
+    session = await SessionManager(
+        Settings(_env_file=None), cookie_override="li_at=AQEDvalue; bcookie=v=2"
+    ).get()
+
+    assert session.csrf_token.startswith("ajax:")
+    assert f'JSESSIONID="{session.csrf_token}"' in session.cookie_header
+    assert "li_at=AQEDvalue" in session.cookie_header
+
+
+async def test_cookie_header_missing_li_at_is_refused_with_a_reason() -> None:
+    """A header without li_at is not a logged-in session, whatever else it holds."""
+    manager = SessionManager(
+        Settings(_env_file=None), cookie_override="bcookie=v=2; lidc=b=tr1"
+    )
+
+    with pytest.raises(SessionUnavailable) as excinfo:
+        await manager.get()
+
+    assert "no li_at" in str(excinfo.value)
+
+
+async def test_a_pasted_curl_style_header_is_accepted() -> None:
+    """People paste with the `Cookie:` prefix and wrapping quotes. Both are fine."""
+    pasted = (
+        '  Cookie: li_at=AQEDvalue; JSESSIONID="ajax:5555555555555555555";'
+        " lidc=b=tr1  "
+    )
+
+    session = await SessionManager(
+        Settings(_env_file=None), cookie_override=pasted
+    ).get()
+
+    assert session.li_at == "AQEDvalue"
+    assert session.csrf_token == "ajax:5555555555555555555"
+    # The `Cookie:` prefix must not survive into the outgoing header.
+    assert not session.cookie_header.lower().startswith("cookie:")
+
+
+# --- query encoding ---------------------------------------------------------
+
+
+@respx.mock
+async def test_a_urn_parameter_is_percent_encoded(client: VoyagerClient) -> None:
+    """The bug that made every dash collection answer 400.
+
+    One safe-characters list applied to every parameter sent `profileUrn` with
+    literal colons. The same request with `%3A` answers 200.
+    """
+    route = respx.get(url__startswith=f"{VOYAGER}/identity/dash/profileSkills").mock(
+        return_value=httpx.Response(200, json={"data": {}, "included": []})
+    )
+
+    await client.get_voyager(
+        "identity/dash/profileSkills",
+        {"q": "viewee", "profileUrn": "urn:li:fsd_profile:ACoAAB", "count": "100"},
+    )
+
+    requested = str(route.calls[0].request.url)
+    assert "profileUrn=urn%3Ali%3Afsd_profile%3AACoAAB" in requested
+    assert "urn:li:" not in requested
+
+
+@respx.mock
+async def test_restli_tuple_syntax_still_survives_encoding(
+    client: VoyagerClient,
+) -> None:
+    """The other half of the same rule: `variables` must NOT be encoded."""
+    route = respx.get(url__startswith=f"{VOYAGER}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {}, "included": []})
+    )
+
+    await client.get_voyager(
+        "graphql",
+        {"variables": "(vanityName:some-person)", "queryId": "voyagerX.abc123"},
+    )
+
+    requested = str(route.calls[0].request.url)
+    assert "(vanityName:some-person)" in requested
+    assert "%28" not in requested and "%3A" not in requested

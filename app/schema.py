@@ -1,15 +1,7 @@
-"""The public response contract.
+"""The public response contract, designed rather than mirrored from Voyager.
 
-Designed rather than mirrored: Voyager's own shapes are deduplicated, versioned,
-and full of internal URNs, none of which a consumer of this API should have to
-know about.
-
-One decision is load-bearing enough to state here rather than bury in the README.
-`meta.sections_unavailable` exists so that an empty list always means "this person
-has none of these" and never "we failed to fetch this". Those are different facts
-and a consumer that cannot tell them apart will silently treat a fetch failure as
-a person with no work history. Every list field is therefore trustworthy on its
-own terms, with failure reported separately and explicitly.
+`meta.sections_unavailable` is the load-bearing part: an empty list always means
+the person has none, never that the fetch failed.
 """
 
 from __future__ import annotations
