@@ -1,0 +1,223 @@
+{
+  "data": {
+    "profile": {
+      "entityUrn": "urn:li:fs_profile:ACoAAB000SYNTHETIC",
+      "firstName": "Ada",
+      "lastName": "Sundqvist",
+      "headline": "Platform Engineer at Kestrel Systems",
+      "summary": "Distributed systems, mostly storage.\nPreviously payments infrastructure.",
+      "industryName": "Software Development",
+      "locationName": "Stockholm, Sweden",
+      "geoLocationName": "Stockholm, Stockholm County, Sweden",
+      "geoCountryName": "Sweden",
+      "location": {
+        "basicLocation": {
+          "countryCode": "se"
+        }
+      },
+      "miniProfile": {
+        "entityUrn": "urn:li:fs_miniProfile:ACoAAB000SYNTHETIC",
+        "publicIdentifier": "ada-sundqvist-synthetic",
+        "occupation": "Platform Engineer at Kestrel Systems",
+        "picture": {
+          "com.linkedin.common.VectorImage": {
+            "rootUrl": "https://media.example-cdn.test/dms/image/synthetic/",
+            "artifacts": [
+              {
+                "width": 100,
+                "height": 100,
+                "fileIdentifyingUrlPathSegment": "profile_100_100/0/aaa?e=1&v=beta"
+              },
+              {
+                "width": 400,
+                "height": 400,
+                "fileIdentifyingUrlPathSegment": "profile_400_400/0/aaa?e=1&v=beta"
+              },
+              {
+                "width": 800,
+                "height": 800,
+                "fileIdentifyingUrlPathSegment": "profile_800_800/0/aaa?e=1&v=beta"
+              }
+            ]
+          }
+        },
+        "backgroundImage": {
+          "com.linkedin.common.VectorImage": {
+            "rootUrl": "https://media.example-cdn.test/dms/image/synthetic-bg/",
+            "artifacts": [
+              {
+                "width": 1400,
+                "height": 350,
+                "fileIdentifyingUrlPathSegment": "bg_1400_350/0/bbb?e=1&v=beta"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "connectionsCount": 842,
+    "followersCount": 1503,
+    "positionView": {
+      "elements": [
+        {
+          "title": "Staff Platform Engineer",
+          "companyName": "Kestrel Systems",
+          "companyUrn": "urn:li:fs_miniCompany:1000001",
+          "locationName": "Stockholm, Sweden",
+          "description": "Storage layer for the ingest pipeline.",
+          "employmentStatus": "Full-time",
+          "timePeriod": {
+            "startDate": { "month": 3, "year": 2022 }
+          },
+          "company": {
+            "miniCompany": {
+              "name": "Kestrel Systems",
+              "logo": {
+                "com.linkedin.common.VectorImage": {
+                  "rootUrl": "https://media.example-cdn.test/dms/image/kestrel/",
+                  "artifacts": [
+                    {
+                      "width": 200,
+                      "height": 200,
+                      "fileIdentifyingUrlPathSegment": "logo_200_200/0/ccc"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "title": "Backend Engineer",
+          "companyName": "Halstead Payments",
+          "companyUrn": "urn:li:fs_miniCompany:1000002",
+          "locationName": "Gothenburg, Sweden",
+          "description": "Ledger reconciliation and settlement.",
+          "timePeriod": {
+            "startDate": { "month": 8, "year": 2019 },
+            "endDate": { "month": 2, "year": 2022 }
+          }
+        }
+      ]
+    },
+    "educationView": {
+      "elements": [
+        {
+          "schoolName": "KTH Royal Institute of Technology",
+          "schoolUrn": "urn:li:fs_miniSchool:2000001",
+          "degreeName": "MSc",
+          "fieldOfStudy": "Computer Science",
+          "grade": "4.6",
+          "activities": "Distributed Systems Reading Group",
+          "description": "Thesis on consensus under partial synchrony.",
+          "timePeriod": {
+            "startDate": { "year": 2014 },
+            "endDate": { "year": 2019 }
+          }
+        }
+      ]
+    },
+    "skillView": {
+      "elements": [
+        { "name": "Distributed Systems" },
+        { "name": "Go" },
+        { "name": "PostgreSQL" }
+      ]
+    },
+    "certificationView": {
+      "elements": [
+        {
+          "name": "Certified Kubernetes Administrator",
+          "authority": "The Linux Foundation",
+          "licenseNumber": "CKA-SYNTHETIC-0001",
+          "url": "https://credentials.example.test/cka/synthetic",
+          "timePeriod": {
+            "startDate": { "month": 5, "year": 2021 },
+            "endDate": { "month": 5, "year": 2024 }
+          }
+        }
+      ]
+    },
+    "languageView": {
+      "elements": [
+        { "name": "Swedish", "proficiency": "NATIVE_OR_BILINGUAL" },
+        { "name": "English", "proficiency": "FULL_PROFESSIONAL" }
+      ]
+    },
+    "projectView": {
+      "elements": [
+        {
+          "title": "wal-replay",
+          "description": "Open-source write-ahead-log replay tool.",
+          "url": "https://example.test/wal-replay",
+          "timePeriod": {
+            "startDate": { "month": 1, "year": 2023 }
+          }
+        }
+      ]
+    },
+    "publicationView": {
+      "elements": [
+        {
+          "name": "Partial Synchrony in Practice",
+          "publisher": "SIGOPS Workshop",
+          "description": "An empirical look at timeout tuning.",
+          "url": "https://example.test/papers/partial-synchrony",
+          "date": { "month": 6, "year": 2021 }
+        }
+      ]
+    },
+    "honorView": {
+      "elements": [
+        {
+          "title": "Engineering Excellence Award",
+          "issuer": "Kestrel Systems",
+          "description": "Ingest pipeline rewrite.",
+          "issueDate": { "month": 12, "year": 2023 }
+        }
+      ]
+    },
+    "volunteerExperienceView": {
+      "elements": [
+        {
+          "role": "Mentor",
+          "companyName": "Kodcentrum",
+          "cause": "SCIENCE_AND_TECHNOLOGY",
+          "description": "Weekly programming workshops.",
+          "timePeriod": {
+            "startDate": { "year": 2020 }
+          }
+        }
+      ]
+    },
+    "courseView": {
+      "elements": [
+        { "name": "Advanced Databases", "number": "ID2221" }
+      ]
+    },
+    "patentView": {
+      "elements": [
+        {
+          "title": "Method for deduplicated log compaction",
+          "issuer": "SE",
+          "number": "SE-SYNTHETIC-1234",
+          "description": "Compaction without full rewrite.",
+          "issueDate": { "month": 9, "year": 2023 }
+        }
+      ]
+    },
+    "organizationView": {
+      "elements": [
+        {
+          "name": "Stockholm Systems Meetup",
+          "position": "Organiser",
+          "description": "Monthly talks on infrastructure.",
+          "timePeriod": {
+            "startDate": { "year": 2021 }
+          }
+        }
+      ]
+    }
+  },
+  "included": []
+}

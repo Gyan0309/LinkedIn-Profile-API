@@ -1,0 +1,21 @@
+{
+  "data": {
+    "*profile": "urn:li:fsd_profile:CYCLE1"
+  },
+  "included": [
+    {
+      "entityUrn": "urn:li:fsd_profile:CYCLE1",
+      "$type": "com.linkedin.voyager.dash.identity.profile.Profile",
+      "firstName": "Loop",
+      "lastName": "Tester",
+      "*currentCompany": "urn:li:fsd_company:CYCLE2",
+      "*missingReference": "urn:li:fsd_company:NOT_IN_INCLUDED"
+    },
+    {
+      "entityUrn": "urn:li:fsd_company:CYCLE2",
+      "$type": "com.linkedin.voyager.dash.organization.Company",
+      "name": "Ouroboros AB",
+      "*employees": ["urn:li:fsd_profile:CYCLE1"]
+    }
+  ]
+}

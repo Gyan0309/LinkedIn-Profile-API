@@ -1,0 +1,113 @@
+{
+  "data": {
+    "identityDashProfileComponentsBySectionType": {
+      "*elements": [
+        "urn:li:fsd_profileCard:(SYNTHETIC,EXPERIENCE,GROUPED)",
+        "urn:li:fsd_profileCard:(SYNTHETIC,EXPERIENCE,SIMPLE)"
+      ]
+    }
+  },
+  "included": [
+    {
+      "entityUrn": "urn:li:fsd_profileCard:(SYNTHETIC,EXPERIENCE,GROUPED)",
+      "$type": "com.linkedin.voyager.dash.identity.profile.tetris.Component",
+      "components": {
+        "entityComponent": {
+          "titleV2": { "text": { "text": "Kestrel Systems" } },
+          "subtitle": { "text": "Full-time · 4 yrs 1 mo" },
+          "caption": { "text": "Aug 2020 - Present · 4 yrs 1 mo" },
+          "metadata": { "text": "Stockholm, Sweden · Hybrid" },
+          "textActionTarget": "https://www.linkedin.com/company/kestrel-systems/",
+          "trackingUrn": "urn:li:fsd_company:1000001",
+          "image": {
+            "attributes": [
+              {
+                "detailData": {
+                  "companyLogo": {
+                    "logo": {
+                      "vectorImage": {
+                        "rootUrl": "https://media.example-cdn.test/dms/image/kestrel/",
+                        "artifacts": [
+                          {
+                            "width": 100,
+                            "height": 100,
+                            "fileIdentifyingUrlPathSegment": "logo_100_100/0/ccc"
+                          },
+                          {
+                            "width": 400,
+                            "height": 400,
+                            "fileIdentifyingUrlPathSegment": "logo_400_400/0/ccc"
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "subComponents": {
+            "components": [
+              {
+                "components": {
+                  "entityComponent": {
+                    "titleV2": { "text": { "text": "Staff Platform Engineer" } },
+                    "caption": { "text": "Mar 2023 - Present · 1 yr 6 mos" },
+                    "metadata": { "text": "Stockholm, Sweden · Hybrid" },
+                    "subComponents": {
+                      "components": [
+                        {
+                          "components": {
+                            "textComponent": {
+                              "text": {
+                                "text": "Storage layer for the ingest pipeline."
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "components": {
+                  "entityComponent": {
+                    "titleV2": { "text": { "text": "Platform Engineer" } },
+                    "caption": { "text": "Aug 2020 - Mar 2023 · 2 yrs 8 mos" },
+                    "metadata": { "text": "Stockholm, Sweden" }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "entityUrn": "urn:li:fsd_profileCard:(SYNTHETIC,EXPERIENCE,SIMPLE)",
+      "$type": "com.linkedin.voyager.dash.identity.profile.tetris.Component",
+      "components": {
+        "entityComponent": {
+          "titleV2": { "text": { "text": "Backend Engineer" } },
+          "subtitle": { "text": "Halstead Payments · Full-time" },
+          "caption": { "text": "Aug 2019 - Mar 2022 · 2 yrs 8 mos" },
+          "metadata": { "text": "Gothenburg, Sweden · On-site" },
+          "textActionTarget": "https://www.linkedin.com/company/halstead-payments/",
+          "trackingUrn": "urn:li:fsd_company:1000002",
+          "subComponents": {
+            "components": [
+              {
+                "components": {
+                  "textComponent": {
+                    "text": { "text": "Ledger reconciliation and settlement." }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

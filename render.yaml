@@ -1,0 +1,42 @@
+# Render blueprint. A `render.yaml` in the repo root lets Render build this
+# service from the Dockerfile with no dashboard configuration.
+#
+# Secrets are declared here by NAME only, with `sync: false`, which tells Render
+# to prompt for the value in the dashboard and never read it from the repo.
+services:
+  - type: web
+    name: linkedin-profile-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /healthz
+
+    envVars:
+      # --- secrets: set in the Render dashboard, never in this file ---
+      - key: LINKEDIN_LI_AT
+        sync: false
+      - key: LINKEDIN_JSESSIONID
+        sync: false
+      - key: API_KEYS
+        sync: false
+      # Optional. A residential proxy, for when Render's IP draws HTTP 999.
+      - key: OUTBOUND_PROXY_URL
+        sync: false
+      # Optional. Pin GraphQL queryIds if runtime discovery breaks.
+      - key: LINKEDIN_QUERY_IDS_JSON
+        sync: false
+
+      # --- non-secret configuration ---
+      - key: DEMO_PROFILES
+        value: williamhgates,satyanadella,jeffweiner08
+      - key: CACHE_TTL_SECONDS
+        value: "21600"
+      - key: DEMO_RATE_LIMIT_PER_HOUR
+        value: "20"
+      - key: KEYED_RATE_LIMIT_PER_HOUR
+        value: "300"
+      # Low on purpose. This is the limit that protects the LinkedIn account.
+      - key: OUTBOUND_MAX_PER_MINUTE
+        value: "30"
+      - key: LOG_LEVEL
+        value: INFO

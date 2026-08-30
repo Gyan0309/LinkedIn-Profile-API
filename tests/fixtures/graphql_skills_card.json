@@ -1,0 +1,62 @@
+{
+  "data": {
+    "identityDashProfileComponentsBySectionType": {
+      "*elements": [
+        "urn:li:fsd_profileCard:(SYNTHETIC,SKILLS,1)",
+        "urn:li:fsd_profileCard:(SYNTHETIC,SKILLS,2)",
+        "urn:li:fsd_profileCard:(SYNTHETIC,SKILLS,3)"
+      ]
+    }
+  },
+  "included": [
+    {
+      "entityUrn": "urn:li:fsd_profileCard:(SYNTHETIC,SKILLS,1)",
+      "$type": "com.linkedin.voyager.dash.identity.profile.tetris.Component",
+      "components": {
+        "entityComponent": {
+          "titleV2": { "text": { "text": "Distributed Systems" } },
+          "subComponents": {
+            "components": [
+              {
+                "components": {
+                  "insightComponent": {
+                    "text": { "text": "31 endorsements" }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "entityUrn": "urn:li:fsd_profileCard:(SYNTHETIC,SKILLS,2)",
+      "$type": "com.linkedin.voyager.dash.identity.profile.tetris.Component",
+      "components": {
+        "entityComponent": {
+          "titleV2": { "text": { "text": "Go" } },
+          "subComponents": {
+            "components": [
+              {
+                "components": {
+                  "textComponent": {
+                    "text": { "text": "1,204 endorsements" }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "entityUrn": "urn:li:fsd_profileCard:(SYNTHETIC,SKILLS,3)",
+      "$type": "com.linkedin.voyager.dash.identity.profile.tetris.Component",
+      "components": {
+        "entityComponent": {
+          "titleV2": { "text": { "text": "PostgreSQL" } }
+        }
+      }
+    }
+  ]
+}

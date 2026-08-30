@@ -1,0 +1,11 @@
+# Packages live flat under app/ and are imported directly — there is no build step
+# and nothing to pip-install from this file. Pytest configuration lives in pytest.ini.
+# This file carries lint configuration only.
+
+[tool.ruff]
+line-length = 100
+src = ["."]
+exclude = [".venv", "tests/fixtures"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

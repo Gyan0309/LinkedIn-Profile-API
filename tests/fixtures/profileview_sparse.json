@@ -1,0 +1,18 @@
+{
+  "data": {
+    "profile": {
+      "entityUrn": "urn:li:fs_profile:ACoAAB111SPARSE",
+      "firstName": "Nils",
+      "lastName": "Berg",
+      "headline": "Looking for my next role",
+      "miniProfile": {
+        "publicIdentifier": "nils-berg-sparse",
+        "occupation": "Looking for my next role"
+      }
+    },
+    "positionView": { "elements": [] },
+    "educationView": { "elements": [] },
+    "skillView": { "elements": [] }
+  },
+  "included": []
+}

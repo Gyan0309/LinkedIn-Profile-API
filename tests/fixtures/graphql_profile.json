@@ -1,0 +1,48 @@
+{
+  "data": {
+    "identityDashProfilesByMemberIdentity": {
+      "*elements": ["urn:li:fsd_profile:ACoAAB000SYNTHETIC"]
+    }
+  },
+  "included": [
+    {
+      "entityUrn": "urn:li:fsd_profile:ACoAAB000SYNTHETIC",
+      "$type": "com.linkedin.voyager.dash.identity.profile.Profile",
+      "publicIdentifier": "ada-sundqvist-synthetic",
+      "firstName": "Ada",
+      "lastName": "Sundqvist",
+      "headline": "Platform Engineer at Kestrel Systems",
+      "summary": "Distributed systems, mostly storage.",
+      "standardizedPronoun": "SHE_HER",
+      "premium": true,
+      "influencer": false,
+      "profilePictureFrameType": "OPEN_TO_WORK",
+      "geoLocation": {
+        "geo": {
+          "defaultLocalizedName": "Stockholm, Stockholm County, Sweden",
+          "country": "urn:li:country:se"
+        }
+      },
+      "industry": { "name": "Software Development" },
+      "profilePicture": {
+        "displayImageReference": {
+          "vectorImage": {
+            "rootUrl": "https://media.example-cdn.test/dms/image/synthetic/",
+            "artifacts": [
+              {
+                "width": 200,
+                "height": 200,
+                "fileIdentifyingUrlPathSegment": "profile_200_200/0/aaa"
+              },
+              {
+                "width": 800,
+                "height": 800,
+                "fileIdentifyingUrlPathSegment": "profile_800_800/0/aaa"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

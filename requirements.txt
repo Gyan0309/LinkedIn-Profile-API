@@ -1,0 +1,9 @@
+fastapi>=0.115.0,<0.116.0
+uvicorn[standard]>=0.34.0,<0.35.0
+# httpx is deliberately range-pinned rather than exact: the client only needs the
+# `proxy=` constructor argument, present since 0.26, so it coexists with whatever
+# else shares the environment. pydantic 2.11+ for the same reason.
+httpx[http2]>=0.27.0,<0.29.0
+pydantic>=2.11.0,<3.0.0
+pydantic-settings>=2.7.0,<3.0.0
+python-dotenv>=1.0.1
