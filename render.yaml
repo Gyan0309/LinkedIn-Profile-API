@@ -1,14 +1,21 @@
-# Render blueprint, a working alternative to fly.toml on the same Dockerfile.
-# Fly is what's deployed -- see fly.toml for why.
+# Render blueprint. This is what's deployed: the free plan needs no card.
 #
 # There are no secrets to set. Callers send their own LinkedIn session per
 # request; the service stores none of its own.
+#
+# The free plan sleeps after 15 minutes idle and takes ~50s to wake, which
+# reads as "broken" to someone trying it once. Point a free uptime monitor at
+# /healthz every 10 minutes and it stays warm inside the 750 monthly hours.
 services:
   - type: web
     name: linkedin-profile-api
     runtime: docker
     dockerfilePath: ./Dockerfile
     plan: free
+    # Nearest free region to where sessions are created. LinkedIn treats a
+    # session used far from its origin as suspicious, and after the User-Agent
+    # the server's location is the largest remaining mismatch.
+    region: singapore
     healthCheckPath: /healthz
 
     envVars:
@@ -26,11 +33,13 @@ services:
       - key: LOG_COLOUR
         value: never
 
-      # Set in the dashboard, from scripts/pin_queryids.py. Pinned ids mean the
-      # service never fetches a LinkedIn HTML page, which draws HTTP 999.
-      - key: LINKEDIN_QUERY_IDS_JSON
-        sync: false
-
-      # Optional residential proxy, for when the host IP gets flagged anyway.
-      - key: OUTBOUND_PROXY_URL
-        sync: false
+      # Deliberately empty, so a blueprint deploy asks for nothing.
+      #
+      # LINKEDIN_QUERY_IDS_JSON pins GraphQL query hashes. The profile path is
+      # dash REST end to end and needs none; the pin only matters if the dash
+      # identity lookup starts failing. Empty also keeps the GraphQL section
+      # pass switched off, so nothing can trigger the HTML fetch that draws
+      # HTTP 999. Fill it from scripts/pin_queryids.py if that day comes.
+      #
+      # OUTBOUND_PROXY_URL takes a residential proxy, for if this host's IP is
+      # flagged. Both can be added in the dashboard later without a redeploy.

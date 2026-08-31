@@ -133,8 +133,6 @@ set. `.env.example` lists the optional tuning knobs.
 
 Docker works too: `docker build -t linkedin-profile-api .`
 
-Deployed on Fly.io via `fly.toml`, pinned to Stockholm so the server sits near
-where sessions are created. `render.yaml` is there as an alternative.
 
 ---
 

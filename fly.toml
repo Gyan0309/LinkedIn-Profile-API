@@ -26,10 +26,6 @@ primary_region = "arn"
   # Logs go to Fly's collector, not a terminal.
   LOG_COLOUR = "never"
 
-  # Set before deploying:
-  #   fly secrets set LINKEDIN_QUERY_IDS_JSON='<from scripts/pin_queryids.py>'
-  # Pinned ids mean the service never fetches a LinkedIn HTML page, which is the
-  # request that draws HTTP 999.
 
 [http_service]
   internal_port = 8000
