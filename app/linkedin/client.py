@@ -9,6 +9,7 @@ minutes.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import re
@@ -29,12 +30,51 @@ from app.errors import (
     SessionUnavailable,
     UpstreamUnavailable,
 )
-from app.linkedin.auth import USER_AGENT, SessionManager
+from app.linkedin.auth import SessionManager, platform_of
 from app.logging_config import stage
 
 logger = logging.getLogger(__name__)
 
 VOYAGER_BASE = "https://www.linkedin.com/voyager/api"
+
+CHROME_VERSION_RE = re.compile(r"Chrome/(\d+)")
+
+
+def client_hints(user_agent: str) -> dict[str, str]:
+    """The `sec-ch-ua*` headers a Chromium browser sends with that User-Agent.
+
+    A Chrome User-Agent arriving without them is itself a mismatch, which is
+    the thing the caller-supplied agent exists to avoid. Non-Chromium browsers
+    send none, so neither do we.
+    """
+    match = CHROME_VERSION_RE.search(user_agent)
+    if not match:
+        return {}
+    version = match.group(1)
+    brand = "Microsoft Edge" if "Edg/" in user_agent else "Google Chrome"
+    return {
+        "sec-ch-ua": (
+            f'"Chromium";v="{version}", "Not=A?Brand";v="24", '
+            f'"{brand}";v="{version}"'
+        ),
+        "sec-ch-ua-mobile": "?1" if "Mobile" in user_agent else "?0",
+        "sec-ch-ua-platform": f'"{platform_of(user_agent)}"',
+    }
+
+
+def _li_track(timezone_offset: float) -> str:
+    """LinkedIn's client descriptor. The offset must match the caller's clock."""
+    whole = int(timezone_offset)
+    return json.dumps(
+        {
+            "clientVersion": "1.13.0",
+            "osName": "web",
+            "timezoneOffset": whole if whole == timezone_offset else timezone_offset,
+            "deviceFormFactor": "DESKTOP",
+            "mpName": "voyager-web",
+        },
+        separators=(",", ":"),
+    )
 
 MAX_ATTEMPTS = 3
 BACKOFF_BASE_SECONDS = 1.5
@@ -252,20 +292,23 @@ class VoyagerClient:
 
     async def _authenticated_headers(self) -> dict[str, str]:
         session = await self._sessions.get()
-        return {
-            "User-Agent": USER_AGENT,
+        headers = {
+            "User-Agent": session.user_agent,
             "Accept": "application/vnd.linkedin.normalized+json+2.1",
             "Cookie": session.cookie_header,
             "csrf-token": session.csrf_token,
             "x-restli-protocol-version": "2.0.0",
             "x-li-lang": "en_US",
-            "x-li-track": (
-                '{"clientVersion":"1.13.0","osName":"web","timezoneOffset":0,'
-                '"deviceFormFactor":"DESKTOP","mpName":"voyager-web"}'
-            ),
+            "x-li-track": _li_track(session.timezone_offset),
             "Accept-Language": "en-US,en;q=0.9",
             "Referer": "https://www.linkedin.com/feed/",
+            # What a real Voyager XHR sends. The HTML path overrides these.
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
         }
+        headers.update(client_hints(session.user_agent))
+        return headers
 
     async def _request(
         self,
@@ -287,6 +330,12 @@ class VoyagerClient:
             headers = await self._authenticated_headers()
             if accept is not None:
                 headers["Accept"] = accept
+                if accept.startswith("text/html"):
+                    # A page load, not an XHR. Fetch metadata that says
+                    # otherwise is the inconsistency being avoided.
+                    headers["sec-fetch-dest"] = "document"
+                    headers["sec-fetch-mode"] = "navigate"
+                    headers["sec-fetch-site"] = "none"
 
             call_started = time.monotonic()
             try:

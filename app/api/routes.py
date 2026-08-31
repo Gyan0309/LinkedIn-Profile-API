@@ -7,10 +7,16 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Query, Request, Security
+from fastapi import APIRouter, Header, Query, Request, Security
 from fastapi.responses import HTMLResponse
 
-from app.api.deps import caller_cookie, linkedin_cookie_scheme, resolve_caller
+from app.api.deps import (
+    caller_cookie,
+    caller_timezone,
+    caller_user_agent,
+    linkedin_cookie_scheme,
+    resolve_caller,
+)
 from app.errors import SessionUnavailable
 from app.linkedin.auth import SessionManager, fingerprint_of
 from app.linkedin.client import VoyagerClient
@@ -75,6 +81,20 @@ async def get_profile(
         False, description="Bypass the cache and refetch from LinkedIn."
     ),
     _cookie: str | None = Security(linkedin_cookie_scheme),
+    _ua: str | None = Header(
+        None,
+        alias="X-LinkedIn-UA",
+        description=(
+            "The User-Agent of the browser your cookie came from. Optional, but "
+            "send it: LinkedIn ties a session to a device fingerprint, and a "
+            "mismatch reads as a stolen cookie and gets the session killed."
+        ),
+    ),
+    _tz: str | None = Header(
+        None,
+        alias="X-LinkedIn-TZ",
+        description="Your UTC offset in hours, e.g. 5.5. Defaults to 0.",
+    ),
 ) -> ProfileResponse:
     state = request.app.state
     started = time.perf_counter()
@@ -113,7 +133,13 @@ async def get_profile(
             f"MISS ({reason}) - fetching upstream",
             session=session_key,
         )
-        result = await _fetch(state, public_identifier, cookie)
+        result = await _fetch(
+            state,
+            public_identifier,
+            cookie,
+            caller_user_agent(request),
+            caller_timezone(request),
+        )
         profile = result.profile
         source = result.source_label
         unavailable = result.sections_unavailable
@@ -153,14 +179,25 @@ async def get_profile(
     )
 
 
-async def _fetch(state, public_identifier: str, cookie: str):
+async def _fetch(
+    state,
+    public_identifier: str,
+    cookie: str,
+    user_agent: str = "",
+    timezone_offset: str = "",
+):
     """Run the chain with the caller's session.
 
     A client per request, since httpx binds to one cookie set. The limiter,
     breaker and registry are borrowed from app state -- they describe LinkedIn
     and our shared IP, not the caller.
     """
-    sessions = SessionManager(state.settings, cookie_override=cookie)
+    sessions = SessionManager(
+        state.settings,
+        cookie_override=cookie,
+        user_agent=user_agent,
+        timezone_offset=timezone_offset,
+    )
     client = VoyagerClient(
         state.settings, sessions, limiter=state.outbound, breaker=state.breaker
     )

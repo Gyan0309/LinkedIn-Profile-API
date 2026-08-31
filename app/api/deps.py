@@ -36,6 +36,20 @@ def caller_cookie(request: Request) -> str:
     return (request.headers.get("x-linkedin-cookie") or "").strip()
 
 
+def caller_user_agent(request: Request) -> str:
+    """The browser the caller's cookie came from.
+
+    Optional, but sending it is what stops LinkedIn seeing a second device
+    using a stolen session and invalidating the cookie everywhere.
+    """
+    return request.headers.get("x-linkedin-ua") or ""
+
+
+def caller_timezone(request: Request) -> str:
+    """The caller's UTC offset in hours, as their browser reports it."""
+    return request.headers.get("x-linkedin-tz") or ""
+
+
 @dataclass
 class Caller:
     """Who is asking, for rate-limiting purposes only."""

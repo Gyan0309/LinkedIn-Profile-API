@@ -9,6 +9,7 @@ There's a web UI at `/` if you'd rather click than curl.
 
 ```bash
 curl -H "X-LinkedIn-Cookie: li_at=...; JSESSIONID=..." \
+     -H "X-LinkedIn-UA: $YOUR_BROWSERS_USER_AGENT" \
      "https://linkedin-profile-api.fly.dev/v1/profile?url=https://www.linkedin.com/in/williamhgates"
 ```
 
@@ -27,10 +28,19 @@ there's nothing on the server to leak.
 2. Reload, click any request to `www.linkedin.com`.
 3. Under **Request Headers**, copy the whole `cookie` value.
 4. Send it as the `X-LinkedIn-Cookie` header.
+5. Send that browser's User-Agent as `X-LinkedIn-UA`. The web UI does this for
+   you; from curl, copy it from the same Request Headers panel.
 
 Use the Network tab, not Application. `li_at` on its own isn't enough — LinkedIn
 also wants `JSESSIONID`, `lidc` and `bcookie`, and without them it redirects to
 a login page.
+
+**Send the User-Agent.** LinkedIn ties a session to the device that created it,
+and the User-Agent is most of that fingerprint. Replay the cookie under a
+different one and LinkedIn reads it as a stolen session: it invalidates the
+token everywhere, which signs you out of your own browser too. The request works
+without the header, and sending it is still the difference between a session
+that survives and one that dies after a call or two.
 
 Create the session at home rather than on a server. A login from a datacenter IP
 is the quickest way to trigger a verification challenge.
@@ -46,6 +56,8 @@ is the quickest way to trigger a verification challenge.
 | `url` (query, required) | A profile URL, or just the identifier |
 | `refresh` (query) | `true` skips the cache |
 | `X-LinkedIn-Cookie` (header, required) | Your session |
+| `X-LinkedIn-UA` (header) | The User-Agent of the browser the cookie came from |
+| `X-LinkedIn-TZ` (header) | Your UTC offset in hours, e.g. `5.5` |
 
 Any URL shape works — locale subdomains, tracking parameters, trailing paths
 like `/details/experience/`, the legacy `/pub/` form, percent-encoded unicode
@@ -191,7 +203,9 @@ minutes. Retrying a block is how a throttled account becomes a banned one.
 - **Datacenter IPs draw HTTP 999.** Authenticated calls fare much better than
   anonymous ones, but a flagged host needs `OUTBOUND_PROXY_URL` pointed at a
   residential proxy. Datacenter proxies don't help.
-- **The account can be restricted.** Inherent to the exercise.
+- **The account can be restricted.** Inherent to the exercise. Sending
+  `X-LinkedIn-UA` removes the most common trigger -- a session replayed
+  under the wrong browser -- but does not make automated access invisible.
 - **A new account sees less.** Visibility depends on network distance, so
   completeness is a property of the session rather than this code.
 - **`connections` and `followers` are always null.** They aren't on the Profile

@@ -317,6 +317,10 @@
         isn't enough &mdash; LinkedIn also expects <code>JSESSIONID</code>,
         <code>lidc</code> and <code>bcookie</code>, and without them it bounces the
         request to a login page.</p>
+        <p><b>Use the browser you're signed in to.</b> This page also sends that
+        browser's identity with the request, because LinkedIn ties a session to
+        the device it was created on. Pasting the cookie into a different browser
+        makes LinkedIn think it was stolen, and it signs you out everywhere.</p>
       </details>
     </div>
 
@@ -433,7 +437,14 @@
       "Asking LinkedIn…</div>";
 
     fetch("/v1/profile?url=" + encodeURIComponent(target), {
-      headers: { "X-LinkedIn-Cookie": cookie() }
+      headers: {
+        "X-LinkedIn-Cookie": cookie(),
+        // LinkedIn ties the session to the browser it was created in. Sending
+        // ours means the request looks like this browser rather than a second
+        // device using a stolen cookie -- which is what gets you logged out.
+        "X-LinkedIn-UA": navigator.userAgent,
+        "X-LinkedIn-TZ": String(-new Date().getTimezoneOffset() / 60)
+      }
     })
       .then(function (r) {
         return r.json().then(function (b) { return { status: r.status, body: b }; });

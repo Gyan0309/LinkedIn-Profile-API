@@ -31,9 +31,18 @@ class StubFetch:
         self.error = error
         self.label = label
         self.cookies: list[str] = []
+        self.agents: list[str] = []
 
-    async def __call__(self, state, public_identifier: str, cookie: str):
+    async def __call__(
+        self,
+        state,
+        public_identifier: str,
+        cookie: str,
+        user_agent: str = "",
+        timezone_offset: str = "",
+    ):
         self.cookies.append(cookie)
+        self.agents.append(user_agent)
         if self.error is not None:
             raise self.error
         return FetchResult(
@@ -227,6 +236,29 @@ def test_missing_url_parameter_is_a_400(api) -> None:
 
     assert response.status_code == 400
     assert response.json()["error"] == "invalid_request"
+
+
+def test_the_callers_browser_is_forwarded_to_the_fetch(api) -> None:
+    """Without this the session is replayed under the wrong device."""
+    client, fetch = api
+    agent = "Mozilla/5.0 (X11; Linux x86_64) Firefox/129.0"
+
+    client.get(
+        f"/v1/profile?url=https://www.linkedin.com/in/{PROFILE}",
+        headers={"X-LinkedIn-Cookie": COOKIE_A, "X-LinkedIn-UA": agent},
+    )
+
+    assert fetch.agents == [agent]
+
+
+def test_a_request_without_a_browser_header_still_works(api) -> None:
+    """Optional. A curl caller gets the default agent, not an error."""
+    client, fetch = api
+
+    response = fetch_profile(client)
+
+    assert response.status_code == 200
+    assert fetch.agents == [""]
 
 
 def test_block_surfaces_as_503_with_retry_after(api, monkeypatch) -> None:
