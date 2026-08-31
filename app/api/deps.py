@@ -98,6 +98,6 @@ def resolve_caller(request: Request) -> Caller:
     client_host = request.client.host if request.client else "unknown"
     forwarded = request.headers.get("x-forwarded-for", "")
     if forwarded:
-        # Fly terminates TLS upstream, so the real client is first in the list.
+        # TLS is terminated upstream, so the real client is first in the list.
         client_host = forwarded.split(",")[0].strip() or client_host
     return Caller(identifier=f"ip:{client_host}")

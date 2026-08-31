@@ -21,5 +21,5 @@ USER appuser
 
 EXPOSE 8000
 
-# Render supplies $PORT; the default keeps `docker run -p 8000:8000` working locally.
+# Hosts inject $PORT; the default keeps `docker run -p 8000:8000` working locally.
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

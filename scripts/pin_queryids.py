@@ -76,7 +76,7 @@ def main() -> int:
     print("  Paste this into LINKEDIN_QUERY_IDS_JSON (one line):\n")
     print(f"LINKEDIN_QUERY_IDS_JSON={json.dumps(found, separators=(',', ':'))}")
     print(f"\n{RULE}")
-    print("  On Fly:  fly secrets set LINKEDIN_QUERY_IDS_JSON='<the JSON above>'")
+    print("  Set it as an environment variable on whatever host you deploy to.")
     print(
         "\n  With these pinned the service never fetches a LinkedIn HTML page,"
         "\n  which is what draws HTTP 999. They rotate when LinkedIn ships, so"
