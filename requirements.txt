@@ -1,4 +1,6 @@
-fastapi>=0.115.0,<0.116.0
+# The `standard` extra carries fastapi-cli, for hosts that start the app
+# with `fastapi run` rather than invoking uvicorn themselves.
+fastapi[standard]>=0.115.0,<0.116.0
 uvicorn[standard]>=0.34.0,<0.35.0
 # httpx is deliberately range-pinned rather than exact: the client only needs the
 # `proxy=` constructor argument, present since 0.26, so it coexists with whatever

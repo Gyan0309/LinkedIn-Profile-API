@@ -8,7 +8,9 @@ version = "1.0.0"
 description = "A LinkedIn profile URL in, that profile as structured JSON out."
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.115.0,<0.116.0",
+    # The `standard` extra carries fastapi-cli. Hosts that start the app
+    # with `fastapi run` rather than uvicorn fail at boot without it.
+    "fastapi[standard]>=0.115.0,<0.116.0",
     "uvicorn[standard]>=0.34.0,<0.35.0",
     "httpx[http2]>=0.27.0,<0.29.0",
     "pydantic>=2.11.0,<3.0.0",

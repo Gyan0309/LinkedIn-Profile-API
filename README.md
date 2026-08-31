@@ -10,7 +10,7 @@ There's a web UI at `/` if you'd rather click than curl.
 ```bash
 curl -H "X-LinkedIn-Cookie: li_at=...; JSESSIONID=..." \
      -H "X-LinkedIn-UA: $YOUR_BROWSERS_USER_AGENT" \
-     "https://linkedin-profile-api.fly.dev/v1/profile?url=https://www.linkedin.com/in/williamhgates"
+     "http://localhost:8000/v1/profile?url=https://www.linkedin.com/in/williamhgates"
 ```
 
 > Automated access breaches LinkedIn's User Agreement §8.2, and the account
@@ -121,7 +121,7 @@ prose. A failure is never returned as a 200 with an empty profile.
 ## Running it
 
 ```bash
-git clone https://github.com/Gyan0309/linkedin-profile-api.git
+git clone https://github.com/Gyan0309/LinkedIn-Profile-API.git
 cd linkedin-profile-api
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt

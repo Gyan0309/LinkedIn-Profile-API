@@ -1,4 +1,4 @@
-# Render blueprint. This is what's deployed: the free plan needs no card.
+# Render blueprint, for deploying from this repo. The free plan needs no card.
 #
 # There are no secrets to set. Callers send their own LinkedIn session per
 # request; the service stores none of its own.
