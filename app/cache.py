@@ -9,20 +9,17 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import Generic, TypeVar
-
-T = TypeVar("T")
 
 MAX_ENTRIES = 512
 
 
 @dataclass
-class _Entry(Generic[T]):
+class _Entry[T]:
     value: T
     expires_at: float
 
 
-class TTLCache(Generic[T]):
+class TTLCache[T]:
     def __init__(self, ttl_seconds: int, max_entries: int = MAX_ENTRIES) -> None:
         self._ttl = ttl_seconds
         self._max_entries = max_entries

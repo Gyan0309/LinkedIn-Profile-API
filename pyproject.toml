@@ -1,6 +1,34 @@
-# Packages live flat under app/ and are imported directly — there is no build step
-# and nothing to pip-install from this file. Pytest configuration lives in pytest.ini.
-# This file carries lint configuration only.
+# Dependencies are declared here as well as in requirements.txt: the Dockerfile
+# installs from requirements.txt, and hosts that build from source read this.
+# Pytest configuration lives in pytest.ini.
+
+[project]
+name = "linkedin-profile-api"
+version = "1.0.0"
+description = "A LinkedIn profile URL in, that profile as structured JSON out."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0,<0.116.0",
+    "uvicorn[standard]>=0.34.0,<0.35.0",
+    "httpx[http2]>=0.27.0,<0.29.0",
+    "pydantic>=2.11.0,<3.0.0",
+    "pydantic-settings>=2.7.0,<3.0.0",
+    "python-dotenv>=1.0.1",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# Listed explicitly. Left to auto-discovery, setuptools sees app/, tests/ and
+# scripts/ side by side and refuses the flat layout as ambiguous.
+[tool.setuptools]
+packages = ["app", "app.api", "app.extract", "app.linkedin"]
+
+# app/web/ holds the page and is not a package, so it ships as package data or
+# not at all -- and `/` would 404 on a built install.
+[tool.setuptools.package-data]
+app = ["web/*.html"]
 
 [tool.ruff]
 line-length = 100
